@@ -1,6 +1,6 @@
 const db = require('../firestore');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
-const { getGeocode, geofire } = require('../utils/geoUtils'); // Upewnij się, że ten plik pomocniczy istnieje
+const { getGeocode, geofire } = require('../utils/geoUtils'); // Upewnij się, że ten plik pomocniczy istnieje i jest poprawny
 const { Storage } = require('@google-cloud/storage');
 const { PubSub } = require('@google-cloud/pubsub');
 
@@ -11,22 +11,22 @@ const postsTopicName = 'post-publication-topic';
 const storage = new Storage();
 const bucketName = process.env.GCS_BUCKET_NAME;
 
-// Ta funkcja pomocnicza pozostaje bez zmian
 const uploadFileToGCS = (file) => {
   return new Promise((resolve, reject) => {
-    const { originalname, buffer } = file;
-    const blob = bucket.file(Date.now() + "_" + originalname.replace(/ /g, "_"));
+    if (!file || !file.originalname || !file.buffer) {
+        return reject('Nieprawidłowy plik do przesłania.');
+    }
+    const blob = storage.bucket(bucketName).file(Date.now() + "_" + file.originalname.replace(/ /g, "_"));
     const blobStream = blob.createWriteStream({ resumable: false });
     blobStream.on('finish', () => {
-      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+      const publicUrl = `https://storage.googleapis.com/${bucketName}/${blob.name}`;
       resolve(publicUrl);
     }).on('error', (err) => {
       reject(`Nie udało się wysłać obrazka: ${err}`);
-    }).end(buffer);
+    }).end(file.buffer);
   });
 };
 
-// Funkcja wyszukiwania, w pełni przepisana na Firestore i GeoFire
 exports.getAllProfiles = async (req, res) => {
     const { cuisine, postal_code, event_start_date, event_end_date, long_term_rental } = req.query;
     
@@ -60,10 +60,10 @@ exports.getAllProfiles = async (req, res) => {
             });
 
             const snapshots = await Promise.all(promises);
-            const potentialMatches = [];
+            let potentialMatches = [];
             snapshots.forEach(snap => {
                 snap.forEach(doc => {
-                    if (!potentialMatches.some(p => p.profile_id === doc.id)) {
+                    if (doc.data().location && !potentialMatches.some(p => p.profile_id === doc.id)) {
                         potentialMatches.push({ profile_id: doc.id, ...doc.data() });
                     }
                 });
@@ -99,7 +99,6 @@ exports.getAllProfiles = async (req, res) => {
 
             profiles = profiles.filter(p => !unavailableProfileIds.has(p.profile_id));
         }
-
         res.json(profiles);
     } catch (error) {
         console.error('BŁĄD ZAPYTANIA W getAllProfiles:', error);
@@ -153,7 +152,6 @@ exports.createProfile = async (req, res) => {
                 console.error(`Nie udało się wysłać zlecenia do Pub/Sub: ${error.message}`);
             }
         }
-
         res.status(201).json(fullProfileData);
     } catch (error) {
         console.error('Błąd dodawania profilu food trucka:', error);
@@ -170,13 +168,19 @@ exports.updateProfile = async (req, res) => {
         const profileRef = db.collection('foodTrucks').doc(profileId);
         const profileDoc = await profileRef.get();
 
-        if (!profileDoc.exists) return res.status(404).json({ message: 'Profil nie istnieje.' });
-        if (profileDoc.data().owner_id !== ownerId) return res.status(403).json({ message: 'Nie masz uprawnień do edycji tego profilu.' });
+        if (!profileDoc.exists) {
+            return res.status(404).json({ message: 'Profil nie istnieje.' });
+        }
+        if (profileDoc.data().owner_id !== ownerId) {
+            return res.status(403).json({ message: 'Nie masz uprawnień do edycji tego profilu.' });
+        }
 
-        let galleryPhotoUrls = profileDoc.data().gallery_photo_urls || [];
+        let galleryPhotoUrls;
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(uploadFileToGCS);
             galleryPhotoUrls = await Promise.all(uploadPromises);
+        } else {
+            galleryPhotoUrls = profileDoc.data().gallery_photo_urls || [];
         }
         
         if (offer && typeof offer === 'string') offer = JSON.parse(offer);
@@ -191,7 +195,7 @@ exports.updateProfile = async (req, res) => {
             offer,
             long_term_rental_available: isLongTerm,
             gallery_photo_urls,
-            profile_image_url: galleryPhotoUrls[0] || profileDoc.data().profile_image_url,
+            profile_image_url: galleryPhotoUrls[0] || null,
             location: (lat && lon) ? new GeoPoint(lat, lon) : null,
             geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : null,
         };
