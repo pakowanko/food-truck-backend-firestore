@@ -1,7 +1,6 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' (Firestore) i narzędzia Firebase.
 const db = require('../firestore');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
-const { getGeocode, geofire } = require('../utils/geoUtils'); // Założenie: przeniosłeś geocode do osobnego pliku
+const { getGeocode, geofire } = require('../utils/geoUtils'); // Upewnij się, że ten plik pomocniczy istnieje
 const { Storage } = require('@google-cloud/storage');
 const { PubSub } = require('@google-cloud/pubsub');
 
@@ -12,71 +11,88 @@ const postsTopicName = 'post-publication-topic';
 const storage = new Storage();
 const bucketName = process.env.GCS_BUCKET_NAME;
 
+// Ta funkcja pomocnicza pozostaje bez zmian
 const uploadFileToGCS = (file) => {
-  // ... ta funkcja pozostaje bez zmian ...
+  return new Promise((resolve, reject) => {
+    const { originalname, buffer } = file;
+    const blob = bucket.file(Date.now() + "_" + originalname.replace(/ /g, "_"));
+    const blobStream = blob.createWriteStream({ resumable: false });
+    blobStream.on('finish', () => {
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+      resolve(publicUrl);
+    }).on('error', (err) => {
+      reject(`Nie udało się wysłać obrazka: ${err}`);
+    }).end(buffer);
+  });
 };
 
+// Funkcja wyszukiwania, w pełni przepisana na Firestore i GeoFire
 exports.getAllProfiles = async (req, res) => {
     const { cuisine, postal_code, event_start_date, event_end_date, long_term_rental } = req.query;
     
     try {
-        let query = db.collection('foodTrucks');
+        let profilesCollectionRef = db.collection('foodTrucks');
+        let query = profilesCollectionRef;
         
-        // --- ZMIENIONE: Filtrowanie dla Firestore ---
-
-        // Filtr po kuchni (używa pola 'offer.dishes', które musi być tablicą w Firestore)
         if (cuisine) {
             query = query.where('offer.dishes', 'array-contains', cuisine);
         }
-
-        // Filtr po wynajmie długoterminowym
         if (long_term_rental === 'true') {
             query = query.where('long_term_rental_available', '==', true);
         }
         
         let profiles = [];
         
-        // Jeśli nie ma kodu pocztowego, wykonujemy proste zapytanie
         if (!postal_code) {
             const snapshot = await query.orderBy('food_truck_name').get();
             profiles = snapshot.docs.map(doc => ({ profile_id: doc.id, ...doc.data() }));
         } else {
-        // --- ZMIENIONE: Logika wyszukiwania geograficznego z GeoFire ---
             const { lat, lon } = await getGeocode(postal_code);
             if (!lat || !lon) return res.json([]);
             
-            const center = new GeoPoint(lat, lon);
-            // GeoFire wymaga, aby w dokumentach pole 'location' było typu GeoPoint
-            // GeoFireX (lub podobna biblioteka) jest potrzebna do złożonych zapytań geo + inne warunki
-            const radiusInKm = 500; // Przykładowy duży promień do wstępnego filtrowania
-            const nearbyQuery = geofire.query(query).within(center, radiusInKm);
+            const center = [lat, lon];
+            const radiusInM = 500 * 1000; // 500km w metrach
             
-            const snapshot = await geofire.get(nearbyQuery);
-            profiles = snapshot.docs
-                .map(doc => {
-                    const data = doc.data();
-                    const distance = geofire.distanceBetween(doc.data().location, center).km;
-                    return { profile_id: doc.id, ...data, distance };
+            const queryBounds = geofire.geohashQueryBounds(center, radiusInM);
+            const promises = queryBounds.map((b) => {
+                const q = query.orderBy('geohash').startAt(b[0]).endAt(b[1]);
+                return q.get();
+            });
+
+            const snapshots = await Promise.all(promises);
+            const potentialMatches = [];
+            snapshots.forEach(snap => {
+                snap.forEach(doc => {
+                    if (!potentialMatches.some(p => p.profile_id === doc.id)) {
+                        potentialMatches.push({ profile_id: doc.id, ...doc.data() });
+                    }
+                });
+            });
+            
+            profiles = potentialMatches
+                .map(p => {
+                    const docLocation = [p.location.latitude, p.location.longitude];
+                    const distanceInKm = geofire.distanceBetween(docLocation, center);
+                    return { ...p, distance: distanceInKm };
                 })
                 .filter(p => p.distance <= p.operation_radius_km)
                 .sort((a, b) => a.distance - b.distance);
         }
 
-        // Filtr po dostępności (daty) - musi być wykonany po pobraniu danych
         if (event_start_date && event_end_date) {
+            const eventStart = new Date(event_start_date);
+            const eventEnd = new Date(event_end_date);
+            
             const bookingsSnap = await db.collection('bookings')
                 .where('status', '==', 'confirmed')
-                .where('event_start_date', '<=', new Date(event_end_date))
+                .where('event_start_date', '<=', eventEnd)
                 .get();
 
             const unavailableProfileIds = new Set();
             bookingsSnap.forEach(doc => {
                 const booking = doc.data();
                 const bookingStart = booking.event_start_date.toDate();
-                const bookingEnd = booking.event_end_date.toDate();
-                const eventStart = new Date(event_start_date);
-                // Prosta logika OVERLAPS
-                if (eventStart < bookingEnd && new Date(event_end_date) > bookingStart) {
+                if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
                     unavailableProfileIds.add(booking.profile_id.toString());
                 }
             });
@@ -92,12 +108,12 @@ exports.getAllProfiles = async (req, res) => {
 };
 
 exports.createProfile = async (req, res) => {
-    // ... walidacja i logika uploadu plików bez zmian ...
     const ownerId = parseInt(req.user.userId, 10);
     let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
     
     try {
-        // ... upload plików ...
+        if (!ownerId) return res.status(403).json({ message: 'Brak autoryzacji.' });
+
         if (offer && typeof offer === 'string') offer = JSON.parse(offer);
         const isLongTerm = /true/i.test(long_term_rental_available);
 
@@ -109,15 +125,15 @@ exports.createProfile = async (req, res) => {
             food_truck_description,
             base_location,
             operation_radius_km: parseInt(operation_radius_km) || null,
-            gallery_photo_urls: [], // zostanie dodane po uploadzie
+            gallery_photo_urls: [],
             profile_image_url: null,
             offer,
             long_term_rental_available: isLongTerm,
             location: (lat && lon) ? new GeoPoint(lat, lon) : null,
+            geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : null,
             created_at: FieldValue.serverTimestamp()
         };
 
-        // Dodaj pliki, jeśli istnieją
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(uploadFileToGCS);
             newProfileData.gallery_photo_urls = await Promise.all(uploadPromises);
@@ -126,9 +142,19 @@ exports.createProfile = async (req, res) => {
 
         const newProfileRef = await db.collection('foodTrucks').add(newProfileData);
         
-        // ... logika Pub/Sub bez zmian ...
+        const fullProfileData = { profile_id: newProfileRef.id, ...newProfileData };
+        
+        if (fullProfileData.gallery_photo_urls && fullProfileData.gallery_photo_urls.length > 0) {
+            const dataBuffer = Buffer.from(JSON.stringify(fullProfileData));
+            try {
+                await pubSubClient.topic(reelsTopicName).publishMessage({ data: dataBuffer });
+                await pubSubClient.topic(postsTopicName).publishMessage({ data: dataBuffer });
+            } catch (error) {
+                console.error(`Nie udało się wysłać zlecenia do Pub/Sub: ${error.message}`);
+            }
+        }
 
-        res.status(201).json({ profile_id: newProfileRef.id, ...newProfileData });
+        res.status(201).json(fullProfileData);
     } catch (error) {
         console.error('Błąd dodawania profilu food trucka:', error);
         res.status(500).json({ message: 'Błąd serwera lub nieprawidłowa lokalizacja.' });
@@ -137,17 +163,39 @@ exports.createProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
-    // ... walidacja ...
-    
+    const ownerId = req.user.userId;
+    let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
+
     try {
-        // ... logika sprawdzania uprawnień ...
-        const { lat, lon } = await getGeocode(req.body.base_location);
+        const profileRef = db.collection('foodTrucks').doc(profileId);
+        const profileDoc = await profileRef.get();
+
+        if (!profileDoc.exists) return res.status(404).json({ message: 'Profil nie istnieje.' });
+        if (profileDoc.data().owner_id !== ownerId) return res.status(403).json({ message: 'Nie masz uprawnień do edycji tego profilu.' });
+
+        let galleryPhotoUrls = profileDoc.data().gallery_photo_urls || [];
+        if (req.files && req.files.length > 0) {
+            const uploadPromises = req.files.map(uploadFileToGCS);
+            galleryPhotoUrls = await Promise.all(uploadPromises);
+        }
+        
+        if (offer && typeof offer === 'string') offer = JSON.parse(offer);
+        const isLongTerm = /true/i.test(long_term_rental_available);
+        const { lat, lon } = await getGeocode(base_location);
+
         const updateData = {
-            // ... mapowanie pól z req.body ...
+            food_truck_name,
+            food_truck_description,
+            base_location,
+            operation_radius_km: parseInt(operation_radius_km) || null,
+            offer,
+            long_term_rental_available: isLongTerm,
+            gallery_photo_urls,
+            profile_image_url: galleryPhotoUrls[0] || profileDoc.data().profile_image_url,
             location: (lat && lon) ? new GeoPoint(lat, lon) : null,
+            geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : null,
         };
         
-        const profileRef = db.collection('foodTrucks').doc(profileId);
         await profileRef.update(updateData);
         
         const updatedDoc = await profileRef.get();
@@ -160,6 +208,9 @@ exports.updateProfile = async (req, res) => {
 
 exports.getMyProfiles = async (req, res) => {
     const { userId } = req.user;
+    if (!userId) {
+        return res.status(403).json({ message: 'Brak autoryzacji.' });
+    }
     try {
         const profilesSnap = await db.collection('foodTrucks')
             .where('owner_id', '==', userId)

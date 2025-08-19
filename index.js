@@ -7,7 +7,7 @@ const { Server } = require("socket.io");
 const path = require('path');
 const fs = require('fs');
 
-// ZMIENIONE: Importujemy połączenie z Firestore zamiast PostgreSQL
+// ZMIENIONE: Importujemy połączenie z Firestore
 const db = require('./firestore');
 const { FieldValue } = require('firebase-admin/firestore');
 
@@ -79,10 +79,8 @@ app.get('/', (req, res) => {
   res.send('Backend for Food Truck Booking Platform is running on Firestore!');
 });
 
-// ZMIENIONE: Endpoint /health nie jest już potrzebny w architekturze Firestore, ale zostawiamy go jako standardowy punkt kontrolny.
-app.get('/health', async (req, res) => {
-  // W architekturze serverless-Firestore, "zdrowie" aplikacji to po prostu jej działanie.
-  // Nie musimy sprawdzać połączenia, bo jest zarządzane przez SDK.
+// Uproszczony health check - dla Firestore nie jest potrzebny do budzenia bazy
+app.get('/health', (req, res) => {
   res.status(200).send('ok');
 });
 
@@ -120,12 +118,17 @@ io.on('connection', (socket) => {
 
     try {
         const newMessageData = {
-          sender_id: parseInt(sender_id),
+          sender_id: parseInt(sender_id, 10),
           message_content: censoredMessage,
           created_at: FieldValue.serverTimestamp()
         };
 
         const messageRef = await db.collection('conversations').doc(conversation_id).collection('messages').add(newMessageData);
+        
+        // Zaktualizuj pole `last_message_at` w konwersacji
+        await db.collection('conversations').doc(conversation_id).update({
+            last_message_at: FieldValue.serverTimestamp()
+        });
         
         const finalMessage = { message_id: messageRef.id, ...newMessageData, created_at: new Date() };
         io.to(conversation_id).emit('receive_message', finalMessage);
@@ -149,7 +152,6 @@ io.on('connection', (socket) => {
                 io.to(recipientId.toString()).emit('new_message_notification', notificationData);
                 console.log(`Wysłano powiadomienie o wiadomości do użytkownika ${recipientId}`);
                 
-                // Logika wysyłki e-mail, jeśli odbiorca nie jest online
                 const roomSockets = await io.in(conversation_id).allSockets();
                 if (roomSockets.size <= 1) {
                     const recipientDoc = await db.collection('users').doc(recipientId.toString()).get();

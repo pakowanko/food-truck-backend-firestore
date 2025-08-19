@@ -1,14 +1,11 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' (Firestore) i narzędzia Firebase.
 const db = require('../firestore');
-const { FieldValue } = require('firebase-admin/firestore');
+const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const sgMail = require('@sendgrid/mail');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { createBrandedEmail, sendPackagingReminderEmail } = require('../utils/emailTemplate');
 const { findAndSuggestAlternatives } = require('../utils/suggestionUtils');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// Tworzenie nowej rezerwacji
 exports.createBookingRequest = async (req, res) => {
     console.log('[Controller: createBookingRequest] Uruchomiono tworzenie rezerwacji.');
     const { 
@@ -20,16 +17,15 @@ exports.createBookingRequest = async (req, res) => {
     const organizerId = req.user.userId;
 
     try {
-        // ZMIENIONE: Operacje na Firestore
         const userDoc = await db.collection('users').doc(organizerId.toString()).get();
-        const organizerPhone = userDoc.data()?.phone_number;
+        const organizerPhone = userDoc.data()?.phone_number || null;
 
         const newBookingData = {
             profile_id: parseInt(profile_id, 10),
-            user_id: organizerId, // Zmieniliśmy nazwę z organizer_id na spójne user_id
-            event_start_date: new Date(event_start_date),
-            event_end_date: new Date(event_end_date),
-            event_details: event_description, // Zmieniliśmy nazwę
+            user_id: organizerId,
+            event_start_date: Timestamp.fromDate(new Date(event_start_date)),
+            event_end_date: Timestamp.fromDate(new Date(event_end_date)),
+            event_details: event_description,
             status: 'pending_owner_approval',
             organizer_phone: organizerPhone,
             event_type,
@@ -37,12 +33,14 @@ exports.createBookingRequest = async (req, res) => {
             event_location,
             event_time,
             utility_costs: parseFloat(utility_costs) || null,
-            created_at: FieldValue.serverTimestamp()
+            created_at: FieldValue.serverTimestamp(),
+            commission_paid: false,
+            packaging_ordered: false,
+            invoice_generated: false,
         };
 
         const newBookingRef = await db.collection('bookings').add(newBookingData);
         
-        // Pobieranie danych właściciela do wysyłki e-maila
         const profileDoc = await db.collection('foodTrucks').doc(profile_id.toString()).get();
         if (profileDoc.exists) {
             const ownerId = profileDoc.data().owner_id;
@@ -72,7 +70,6 @@ exports.createBookingRequest = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera podczas tworzenia rezerwacji.' });
     }
 };
-
 
 exports.updateBookingStatus = async (req, res) => {
     const { requestId } = req.params;
@@ -106,19 +103,26 @@ exports.updateBookingStatus = async (req, res) => {
         if (status === 'confirmed') {
             if (organizerEmail) {
                 const title = `Twoja rezerwacja dla ${foodTruckName} została POTWIERDZONA!`;
-                // ... reszta logiki email ...
-                await sgMail.send(/* ... */);
+                const body = `<p>Dobra wiadomość! Twoja rezerwacja food trucka <strong>${foodTruckName}</strong> na wydarzenie w dniu ${bookingRequest.event_start_date.toDate().toLocaleDateString()} została potwierdzona przez właściciela.</p>`;
+                const finalHtml = createBrandedEmail(title, body);
+                const msg = { to: organizerEmail, from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
+                await sgMail.send(msg);
             }
+
             if (ownerEmail) {
                 const title = `Potwierdziłeś rezerwację #${requestId}!`;
-                // ... reszta logiki email ...
-                await sgMail.send(/* ... */);
+                const body = `<p>Dziękujemy za potwierdzenie rezerwacji.</p><p><strong>Pamiętaj, że zgodnie z regulaminem, jesteś zobowiązany do zakupu opakowań na to wydarzenie w naszym sklepie: <a href="https://www.pakowanko.com">www.pakowanko.com</a>.</strong></p>`;
+                const finalHtml = createBrandedEmail(title, body);
+                const msg = { to: ownerEmail, from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
+                await sgMail.send(msg);
             }
+        
         } else if (status === 'rejected_by_owner') {
-            findAndSuggestAlternatives(requestId); // Ta funkcja może wymagać dostosowania
+            findAndSuggestAlternatives(requestId);
         }
 
-        res.json({ request_id: requestId, status });
+        const updatedBooking = await bookingRef.get();
+        res.json({ request_id: updatedBooking.id, ...updatedBooking.data() });
     } catch (error) {
         console.error("Błąd aktualizacji statusu rezerwacji:", error);
         res.status(500).json({ message: error.message || 'Błąd serwera.' });
@@ -149,10 +153,23 @@ exports.cancelBooking = async (req, res) => {
         const newStatus = user_type === 'organizer' ? 'cancelled_by_organizer' : 'cancelled_by_owner';
         await bookingRef.update({ status: newStatus });
         
-        // Logika wysyłania e-maili pozostaje podobna, trzeba tylko pobrać dane z Firestore
-        // ...
+        const ownerDoc = await db.collection('users').doc(ownerId.toString()).get();
+        const organizerDoc = await db.collection('users').doc(booking.user_id.toString()).get();
+        
+        const foodTruckName = profileDoc.data()?.food_truck_name;
+        const ownerEmail = ownerDoc.data()?.email;
+        const organizerEmail = organizerDoc.data()?.email;
+        const recipientEmail = user_type === 'organizer' ? ownerEmail : organizerEmail;
+        const cancellerRole = user_type === 'organizer' ? 'Organizator' : 'Właściciel Food Trucka';
 
-        res.json({ request_id: requestId, status: newStatus });
+        const title = `Rezerwacja #${requestId} dla ${foodTruckName} została ANULOWANA`;
+        const body = `<p>Rezerwacja na wydarzenie w dniu ${booking.event_start_date.toDate().toLocaleDateString()} została anulowana przez: <strong>${cancellerRole}</strong>.</p>`;
+        const finalHtml = createBrandedEmail(title, body);
+        const msg = { to: recipientEmail, from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
+        await sgMail.send(msg);
+
+        const updatedBooking = await bookingRef.get();
+        res.json({ request_id: updatedBooking.id, ...updatedBooking.data() });
     } catch (error) {
         console.error("Błąd podczas anulowania rezerwacji:", error);
         res.status(500).json({ message: 'Błąd serwera.' });
@@ -168,7 +185,6 @@ exports.getMyBookings = async (req, res) => {
         if (userRole === 'organizer') {
             query = db.collection('bookings').where('user_id', '==', userId).orderBy('created_at', 'desc');
         } else { // food_truck_owner
-            // To jest bardziej złożone, bo musimy znaleźć profile właściciela, a potem rezerwacje dla tych profili.
             const profilesSnap = await db.collection('foodTrucks').where('owner_id', '==', userId).get();
             if (profilesSnap.empty) {
                 return res.json([]);
@@ -180,7 +196,6 @@ exports.getMyBookings = async (req, res) => {
         const bookingsSnap = await query.get();
         const bookings = await Promise.all(bookingsSnap.docs.map(async doc => {
             const booking = { request_id: doc.id, ...doc.data() };
-            // Dołączamy dodatkowe dane, tak jak w SQL JOIN
             const profileSnap = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
             booking.food_truck_name = profileSnap.data()?.food_truck_name;
 
@@ -188,7 +203,6 @@ exports.getMyBookings = async (req, res) => {
                 const organizerSnap = await db.collection('users').doc(booking.user_id.toString()).get();
                 booking.organizer_email = organizerSnap.data()?.email;
                 booking.organizer_first_name = organizerSnap.data()?.first_name;
-                // ... etc.
             }
             return booking;
         }));
