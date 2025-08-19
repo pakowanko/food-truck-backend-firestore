@@ -159,10 +159,14 @@ exports.createProfile = async (req, res) => {
     }
 };
 
+// ... (początek pliku bez zmian) ...
+
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
     const ownerId = req.user.userId;
-    let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
+    // --- POPRAWKA TUTAJ ---
+    // Pobieramy dane z req.body, ale będziemy ich używać ostrożnie
+    const { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
 
     try {
         const profileRef = db.collection('foodTrucks').doc(profileId);
@@ -175,29 +179,32 @@ exports.updateProfile = async (req, res) => {
             return res.status(403).json({ message: 'Nie masz uprawnień do edycji tego profilu.' });
         }
 
-        let galleryPhotoUrls;
+        const existingData = profileDoc.data();
+        let galleryPhotoUrls = existingData.gallery_photo_urls || [];
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(uploadFileToGCS);
             galleryPhotoUrls = await Promise.all(uploadPromises);
-        } else {
-            galleryPhotoUrls = profileDoc.data().gallery_photo_urls || [];
         }
         
-        if (offer && typeof offer === 'string') offer = JSON.parse(offer);
-        const isLongTerm = /true/i.test(long_term_rental_available);
-        const { lat, lon } = await getGeocode(base_location);
+        // Używamy nowych danych, jeśli istnieją, w przeciwnym razie zachowujemy stare
+        const new_base_location = base_location || existingData.base_location;
+        const { lat, lon } = await getGeocode(new_base_location);
+        let parsedOffer = existingData.offer;
+        if (offer && typeof offer === 'string') {
+            parsedOffer = JSON.parse(offer);
+        }
 
         const updateData = {
-            food_truck_name,
-            food_truck_description,
-            base_location,
-            operation_radius_km: parseInt(operation_radius_km) || null,
-            offer,
-            long_term_rental_available: isLongTerm,
+            food_truck_name: food_truck_name || existingData.food_truck_name,
+            food_truck_description: food_truck_description || existingData.food_truck_description,
+            base_location: new_base_location,
+            operation_radius_km: parseInt(operation_radius_km) || existingData.operation_radius_km,
+            offer: parsedOffer,
+            long_term_rental_available: /true/i.test(long_term_rental_available),
             gallery_photo_urls,
             profile_image_url: galleryPhotoUrls[0] || null,
-            location: (lat && lon) ? new GeoPoint(lat, lon) : null,
-            geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : null,
+            location: (lat && lon) ? new GeoPoint(lat, lon) : existingData.location,
+            geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : existingData.geohash,
         };
         
         await profileRef.update(updateData);
@@ -209,6 +216,7 @@ exports.updateProfile = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera lub nieprawidłowa lokalizacja.' });
     }
 };
+
 
 exports.getMyProfiles = async (req, res) => {
     const { userId } = req.user;
