@@ -161,7 +161,8 @@ exports.createProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
-    const ownerId = req.user.userId;
+    // Upewnij się, że userId jest poprawnie parsowany do liczby, jeśli tak jest przechowywany w Firestore
+    const ownerId = parseInt(req.user.userId, 10); 
     let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
 
     try {
@@ -177,17 +178,16 @@ exports.updateProfile = async (req, res) => {
 
         const existingData = profileDoc.data();
         
-        // --- POPRAWKA TUTAJ ---
+        // ✨ KLUCZOWA POPRAWKA ✨
         let galleryPhotoUrls;
         if (req.files && req.files.length > 0) {
-            // Jeśli są nowe pliki, prześlij je i zastąp starą galerię
+            // Jeśli są nowe pliki, prześlij je i one zastąpią starą galerię
             const uploadPromises = req.files.map(uploadFileToGCS);
             galleryPhotoUrls = await Promise.all(uploadPromises);
         } else {
-            // Jeśli nie ma nowych plików, użyj istniejącej galerii z bazy
+            // Jeśli nie ma nowych plików, zachowaj istniejącą galerię
             galleryPhotoUrls = existingData.gallery_photo_urls || [];
         }
-        // --- KONIEC POPRAWKI ---
         
         if (offer && typeof offer === 'string') offer = JSON.parse(offer);
         const isLongTerm = /true/i.test(long_term_rental_available);
@@ -201,8 +201,8 @@ exports.updateProfile = async (req, res) => {
             operation_radius_km: parseInt(operation_radius_km) || existingData.operation_radius_km,
             offer: offer || existingData.offer,
             long_term_rental_available: isLongTerm,
-            gallery_photo_urls, // Teraz ta zmienna zawsze istnieje
-            profile_image_url: galleryPhotoUrls[0] || null,
+            gallery_photo_urls: galleryPhotoUrls, // ✅ Zmienna zawsze istnieje
+            profile_image_url: galleryPhotoUrls[0] || existingData.profile_image_url || null, // Ustawia pierwsze zdjęcie z galerii jako profilowe
             location: (lat && lon) ? new GeoPoint(lat, lon) : existingData.location,
             geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : existingData.geohash,
         };
