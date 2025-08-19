@@ -159,14 +159,10 @@ exports.createProfile = async (req, res) => {
     }
 };
 
-// ... (początek pliku bez zmian) ...
-
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
     const ownerId = req.user.userId;
-    // --- POPRAWKA TUTAJ ---
-    // Pobieramy dane z req.body, ale będziemy ich używać ostrożnie
-    const { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
+    let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
 
     try {
         const profileRef = db.collection('foodTrucks').doc(profileId);
@@ -180,28 +176,32 @@ exports.updateProfile = async (req, res) => {
         }
 
         const existingData = profileDoc.data();
-        let galleryPhotoUrls = existingData.gallery_photo_urls || [];
+        
+        // --- POPRAWKA TUTAJ ---
+        let galleryPhotoUrls;
         if (req.files && req.files.length > 0) {
+            // Jeśli są nowe pliki, prześlij je i zastąp starą galerię
             const uploadPromises = req.files.map(uploadFileToGCS);
             galleryPhotoUrls = await Promise.all(uploadPromises);
+        } else {
+            // Jeśli nie ma nowych plików, użyj istniejącej galerii z bazy
+            galleryPhotoUrls = existingData.gallery_photo_urls || [];
         }
+        // --- KONIEC POPRAWKI ---
         
-        // Używamy nowych danych, jeśli istnieją, w przeciwnym razie zachowujemy stare
+        if (offer && typeof offer === 'string') offer = JSON.parse(offer);
+        const isLongTerm = /true/i.test(long_term_rental_available);
         const new_base_location = base_location || existingData.base_location;
         const { lat, lon } = await getGeocode(new_base_location);
-        let parsedOffer = existingData.offer;
-        if (offer && typeof offer === 'string') {
-            parsedOffer = JSON.parse(offer);
-        }
 
         const updateData = {
             food_truck_name: food_truck_name || existingData.food_truck_name,
             food_truck_description: food_truck_description || existingData.food_truck_description,
             base_location: new_base_location,
             operation_radius_km: parseInt(operation_radius_km) || existingData.operation_radius_km,
-            offer: parsedOffer,
-            long_term_rental_available: /true/i.test(long_term_rental_available),
-            gallery_photo_urls,
+            offer: offer || existingData.offer,
+            long_term_rental_available: isLongTerm,
+            gallery_photo_urls, // Teraz ta zmienna zawsze istnieje
             profile_image_url: galleryPhotoUrls[0] || null,
             location: (lat && lon) ? new GeoPoint(lat, lon) : existingData.location,
             geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : existingData.geohash,
