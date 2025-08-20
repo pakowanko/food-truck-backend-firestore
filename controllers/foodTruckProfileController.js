@@ -62,27 +62,59 @@ exports.getAllProfiles = async (req, res) => {
         
         if (!postal_code) {
             const snapshot = await query.orderBy('food_truck_name').get();
-            // ✨ POPRAWKA: Używamy 'doc_id', aby nie nadpisać numerycznego 'profile_id'
+            // Zwracamy numeryczne profile_id oraz ID dokumentu jako doc_id
             profiles = snapshot.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
         } else {
-            // ... (logika geofire) ...
+            const { lat, lon } = await getGeocode(postal_code);
+            if (!lat || !lon) return res.json([]);
+            
+            const center = [lat, lon];
+            const radiusInM = 500 * 1000;
+            
+            const queryBounds = geofire.geohashQueryBounds(center, radiusInM);
+            const promises = queryBounds.map((b) => {
+                const q = query.orderBy('geohash').startAt(b[0]).endAt(b[1]);
+                return q.get();
+            });
+
+            const snapshots = await Promise.all(promises);
+            let potentialMatches = [];
             snapshots.forEach(snap => {
                 snap.forEach(doc => {
                     if (doc.data().location && !potentialMatches.some(p => p.doc_id === doc.id)) {
-                        // ✨ POPRAWKA: Używamy 'doc_id' również tutaj
                         potentialMatches.push({ doc_id: doc.id, ...doc.data() });
                     }
                 });
             });
-            // ... (reszta logiki geofire) ...
+            
+            profiles = potentialMatches
+                .map(p => {
+                    const docLocation = [p.location.latitude, p.location.longitude];
+                    const distanceInKm = geofire.distanceBetween(docLocation, center);
+                    return { ...p, distance: distanceInKm };
+                })
+                .filter(p => p.distance <= p.operation_radius_km)
+                .sort((a, b) => a.distance - b.distance);
         }
 
         if (event_start_date && event_end_date) {
-            // ... (logika sprawdzania dostępności) ...
-            // ✨ POPRAWKA: Porównujemy z numerycznym profile_id, a nie z doc_id
-             unavailableProfileIds.add(booking.profile_id); // Usunięto .toString()
-            // ...
-            // ✨ POPRAWKA: Filtrujemy po numerycznym profile_id
+            const eventStart = new Date(event_start_date);
+            const eventEnd = new Date(event_end_date);
+            
+            const bookingsSnap = await db.collection('bookings')
+                .where('status', '==', 'confirmed')
+                .where('event_start_date', '<=', eventEnd)
+                .get();
+
+            const unavailableProfileIds = new Set();
+            bookingsSnap.forEach(doc => {
+                const booking = doc.data();
+                const bookingStart = booking.event_start_date.toDate();
+                if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
+                    unavailableProfileIds.add(booking.profile_id); // Porównujemy numeryczne ID
+                }
+            });
+
             profiles = profiles.filter(p => !unavailableProfileIds.has(p.profile_id));
         }
         res.json(profiles);
@@ -91,7 +123,6 @@ exports.getAllProfiles = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera podczas wyszukiwania profili.' });
     }
 };
-
 exports.createProfile = async (req, res) => {
     const ownerId = parseInt(req.user.userId, 10);
     let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
@@ -228,11 +259,19 @@ exports.getMyProfiles = async (req, res) => {
 
 exports.getProfileById = async (req, res) => {
   try {
-    const { profileId } = req.params; // profileId to ID dokumentu (string)
-    const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
+    const { profileId } = req.params; // profileId to numeryczne ID (jako tekst z URL)
+    
+    const numericProfileId = parseInt(profileId, 10);
+    if (isNaN(numericProfileId)) {
+        return res.status(400).json({ message: 'Nieprawidłowe ID profilu.' });
+    }
 
-    if (profileDoc.exists) {
-      // ✨ POPRAWKA: Używamy 'doc_id', aby nie nadpisać numerycznego 'profile_id'
+    // Szukamy dokumentu, który MA WEWNĄTRZ POLE 'profile_id' równe podanej wartości
+    const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', numericProfileId).limit(1).get();
+
+    if (!profileQuery.empty) {
+      const profileDoc = profileQuery.docs[0];
+      // Zwracamy ID dokumentu jako doc_id, aby nie nadpisać numerycznego profile_id
       res.json({ doc_id: profileDoc.id, ...profileDoc.data() });
     } else {
       res.status(404).json({ message: 'Nie znaleziono profilu o podanym ID.' });

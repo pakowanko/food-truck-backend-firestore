@@ -131,18 +131,15 @@ exports.getAllBookings = async (req, res) => {
         const bookingsData = await Promise.all(bookingsSnap.docs.map(async (doc) => {
             const booking = { request_id: doc.id, ...doc.data() };
             
-            // Przygotuj domyślne obiekty na wypadek braku danych
             let profileInfo = { food_truck_name: 'Brak danych (profil usunięty)' };
-            let ownerInfo = { owner_email: 'Brak danych', owner_phone: 'Brak danych', company_name: '' };
-            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych' };
+            let ownerInfo = { owner_email: 'Brak danych', company_name: '' };
+            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych' };
 
             if (booking.profile_id) {
-                // Używamy JEDYNEJ poprawnej metody wyszukiwania po polu `profile_id`
                 const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
                 
                 if (!profileQuery.empty) {
-                    const profileDoc = profileQuery.docs[0];
-                    const profileData = profileDoc.data();
+                    const profileData = profileQuery.docs[0].data();
                     profileInfo.food_truck_name = profileData.food_truck_name || 'Brak nazwy';
                     
                     if (profileData.owner_id) {
@@ -150,8 +147,7 @@ exports.getAllBookings = async (req, res) => {
                         if (!ownerQuery.empty) {
                             const ownerData = ownerQuery.docs[0].data();
                             ownerInfo.owner_email = ownerData.email;
-                            ownerInfo.owner_phone = ownerData.phone_number;
-                            ownerInfo.company_name = ownerData.company_name; // Pobieramy company_name dla widoku listy
+                            ownerInfo.company_name = ownerData.company_name;
                         }
                     }
                 }
@@ -163,17 +159,10 @@ exports.getAllBookings = async (req, res) => {
                     const orgData = organizerQuery.docs[0].data();
                     organizerInfo.organizer_first_name = orgData.first_name;
                     organizerInfo.organizer_last_name = orgData.last_name;
-                    organizerInfo.organizer_email = orgData.email;
                 }
             }
 
-            // Zwróć połączone dane
-            return {
-                ...booking,
-                ...profileInfo,
-                ...ownerInfo,
-                ...organizerInfo
-            };
+            return { ...booking, ...profileInfo, ...ownerInfo, ...organizerInfo };
         }));
 
         res.json(bookingsData);
@@ -492,12 +481,9 @@ exports.getBookingById = async (req, res) => {
         let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych', organizer_phone: 'Brak danych' };
 
         if (booking.profile_id) {
-            // Używamy JEDYNEJ poprawnej metody wyszukiwania po polu `profile_id`
             const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-            
             if (!profileQuery.empty) {
-                const profileDoc = profileQuery.docs[0];
-                const profileData = profileDoc.data();
+                const profileData = profileQuery.docs[0].data();
                 profileInfo.food_truck_name = profileData.food_truck_name;
 
                 if (profileData.owner_id) {
@@ -510,7 +496,6 @@ exports.getBookingById = async (req, res) => {
                 }
             }
         }
-
         if (booking.user_id) {
             const organizerQuery = await db.collection('users').where('user_id', '==', booking.user_id).limit(1).get();
             if (!organizerQuery.empty) {
