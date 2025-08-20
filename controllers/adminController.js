@@ -131,23 +131,23 @@ exports.getAllBookings = async (req, res) => {
         const bookingsData = await Promise.all(bookingsSnap.docs.map(async (doc) => {
             const booking = { request_id: doc.id, ...doc.data() };
             
-            let profileInfo = { food_truck_name: 'Brak danych (usunięty profil)' };
-            let ownerInfo = { owner_email: 'Brak danych', owner_phone: 'Brak danych', company_name: '' };
-            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych' };
+            let profileInfo = { food_truck_name: 'Brak danych (profil usunięty)' };
+            let ownerInfo = { owner_email: 'Brak danych', company_name: '' };
+            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych' };
 
             if (booking.profile_id) {
-                const profileSnap = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-                if (!profileSnap.empty) {
-                    const profileDoc = profileSnap.docs[0];
+                // Poprawna metoda: szukaj dokumentu po ID, konwertując liczbę na tekst
+                const profileDoc = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
+                
+                if (profileDoc.exists) {
                     const profileData = profileDoc.data();
                     profileInfo.food_truck_name = profileData.food_truck_name || 'Brak nazwy';
                     
                     if (profileData.owner_id) {
-                        const ownerSnap = await db.collection('users').where('user_id', '==', profileData.owner_id).limit(1).get();
-                        if (!ownerSnap.empty) {
-                            const ownerData = ownerSnap.docs[0].data();
+                        const ownerDoc = await db.collection('users').doc(profileData.owner_id.toString()).get();
+                        if (ownerDoc.exists) {
+                            const ownerData = ownerDoc.data();
                             ownerInfo.owner_email = ownerData.email;
-                            ownerInfo.owner_phone = ownerData.phone_number;
                             ownerInfo.company_name = ownerData.company_name;
                         }
                     }
@@ -155,12 +155,11 @@ exports.getAllBookings = async (req, res) => {
             }
 
             if (booking.user_id) {
-                const organizerSnap = await db.collection('users').where('user_id', '==', booking.user_id).limit(1).get();
-                if (!organizerSnap.empty) {
-                    const orgData = organizerSnap.docs[0].data();
+                const organizerDoc = await db.collection('users').doc(booking.user_id.toString()).get();
+                if (organizerDoc.exists) {
+                    const orgData = organizerDoc.data();
                     organizerInfo.organizer_first_name = orgData.first_name;
                     organizerInfo.organizer_last_name = orgData.last_name;
-                    organizerInfo.organizer_email = orgData.email;
                 }
             }
 
@@ -474,7 +473,7 @@ exports.getBookingById = async (req, res) => {
     try {
         const bookingDoc = await db.collection('bookings').doc(requestId).get();
         if (!bookingDoc.exists) {
-            return res.status(404).json({ message: 'Nie znaleziono rezerwacji o podanym ID.' });
+            return res.status(404).json({ message: 'Nie znaleziono rezerwacji.' });
         }
         const booking = { request_id: bookingDoc.id, ...bookingDoc.data() };
 
@@ -483,15 +482,14 @@ exports.getBookingById = async (req, res) => {
         let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych', organizer_phone: 'Brak danych' };
 
         if (booking.profile_id) {
-            const profileSnap = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-            if (!profileSnap.empty) {
-                const profileDoc = profileSnap.docs[0];
+            const profileDoc = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
+            if (profileDoc.exists) {
                 const profileData = profileDoc.data();
                 profileInfo.food_truck_name = profileData.food_truck_name;
                 if (profileData.owner_id) {
-                    const ownerSnap = await db.collection('users').where('user_id', '==', profileData.owner_id).limit(1).get();
-                    if (!ownerSnap.empty) {
-                        const ownerData = ownerSnap.docs[0].data();
+                    const ownerDoc = await db.collection('users').doc(profileData.owner_id.toString()).get();
+                    if (ownerDoc.exists) {
+                        const ownerData = ownerDoc.data();
                         ownerInfo.owner_email = ownerData.email;
                         ownerInfo.owner_phone = ownerData.phone_number;
                     }
@@ -499,9 +497,9 @@ exports.getBookingById = async (req, res) => {
             }
         }
         if (booking.user_id) {
-            const organizerSnap = await db.collection('users').where('user_id', '==', booking.user_id).limit(1).get();
-            if (!organizerSnap.empty) {
-                const orgData = organizerSnap.docs[0].data();
+            const organizerDoc = await db.collection('users').doc(booking.user_id.toString()).get();
+            if (organizerDoc.exists) {
+                const orgData = organizerDoc.data();
                 organizerInfo.organizer_first_name = orgData.first_name;
                 organizerInfo.organizer_last_name = orgData.last_name;
                 organizerInfo.organizer_email = orgData.email;
