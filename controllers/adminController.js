@@ -131,13 +131,12 @@ exports.getAllBookings = async (req, res) => {
         const bookingsData = await Promise.all(bookingsSnap.docs.map(async (doc) => {
             const booking = { request_id: doc.id, ...doc.data() };
             
-            let profileInfo = { food_truck_name: 'Brak danych (profil usunięty)' };
+            let profileInfo = { food_truck_name: 'Brak danych' };
             let ownerInfo = { owner_email: 'Brak danych', company_name: '' };
-            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych' };
+            let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych' };
 
             if (booking.profile_id) {
                 const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-                
                 if (!profileQuery.empty) {
                     const profileData = profileQuery.docs[0].data();
                     profileInfo.food_truck_name = profileData.food_truck_name || 'Brak nazwy';
@@ -159,6 +158,7 @@ exports.getAllBookings = async (req, res) => {
                     const orgData = organizerQuery.docs[0].data();
                     organizerInfo.organizer_first_name = orgData.first_name;
                     organizerInfo.organizer_last_name = orgData.last_name;
+                    organizerInfo.organizer_email = orgData.email;
                 }
             }
 
@@ -485,7 +485,6 @@ exports.getBookingById = async (req, res) => {
             if (!profileQuery.empty) {
                 const profileData = profileQuery.docs[0].data();
                 profileInfo.food_truck_name = profileData.food_truck_name;
-
                 if (profileData.owner_id) {
                     const ownerQuery = await db.collection('users').where('user_id', '==', profileData.owner_id).limit(1).get();
                     if (!ownerQuery.empty) {
