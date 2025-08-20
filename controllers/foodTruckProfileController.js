@@ -11,6 +11,24 @@ const postsTopicName = 'post-publication-topic';
 const storage = new Storage();
 const bucketName = process.env.GCS_BUCKET_NAME;
 
+// Funkcja pomocnicza do pobierania następnego unikalnego, numerycznego ID dla profilu
+async function getNextProfileId() {
+    const counterRef = db.collection('counters').doc('profileCounter');
+    
+    return db.runTransaction(async (transaction) => {
+        const counterDoc = await transaction.get(counterRef);
+        if (!counterDoc.exists) {
+            // Jeśli licznik nie istnieje, zaczynamy od bezpiecznej, wysokiej liczby
+            const startId = 1000;
+            transaction.set(counterRef, { currentId: startId });
+            return startId;
+        }
+        const newId = counterDoc.data().currentId + 1;
+        transaction.update(counterRef, { currentId: newId });
+        return newId;
+    });
+}
+
 const uploadFileToGCS = (file) => {
   return new Promise((resolve, reject) => {
     if (!file || !file.originalname || !file.buffer) {
@@ -31,8 +49,7 @@ exports.getAllProfiles = async (req, res) => {
     const { cuisine, postal_code, event_start_date, event_end_date, long_term_rental } = req.query;
     
     try {
-        let profilesCollectionRef = db.collection('foodTrucks');
-        let query = profilesCollectionRef;
+        let query = db.collection('foodTrucks');
         
         if (cuisine) {
             query = query.where('offer.dishes', 'array-contains', cuisine);
@@ -45,58 +62,27 @@ exports.getAllProfiles = async (req, res) => {
         
         if (!postal_code) {
             const snapshot = await query.orderBy('food_truck_name').get();
-            profiles = snapshot.docs.map(doc => ({ profile_id: doc.id, ...doc.data() }));
+            // ✨ POPRAWKA: Używamy 'doc_id', aby nie nadpisać numerycznego 'profile_id'
+            profiles = snapshot.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
         } else {
-            const { lat, lon } = await getGeocode(postal_code);
-            if (!lat || !lon) return res.json([]);
-            
-            const center = [lat, lon];
-            const radiusInM = 500 * 1000; // 500km w metrach
-            
-            const queryBounds = geofire.geohashQueryBounds(center, radiusInM);
-            const promises = queryBounds.map((b) => {
-                const q = query.orderBy('geohash').startAt(b[0]).endAt(b[1]);
-                return q.get();
-            });
-
-            const snapshots = await Promise.all(promises);
-            let potentialMatches = [];
+            // ... (logika geofire) ...
             snapshots.forEach(snap => {
                 snap.forEach(doc => {
-                    if (doc.data().location && !potentialMatches.some(p => p.profile_id === doc.id)) {
-                        potentialMatches.push({ profile_id: doc.id, ...doc.data() });
+                    if (doc.data().location && !potentialMatches.some(p => p.doc_id === doc.id)) {
+                        // ✨ POPRAWKA: Używamy 'doc_id' również tutaj
+                        potentialMatches.push({ doc_id: doc.id, ...doc.data() });
                     }
                 });
             });
-            
-            profiles = potentialMatches
-                .map(p => {
-                    const docLocation = [p.location.latitude, p.location.longitude];
-                    const distanceInKm = geofire.distanceBetween(docLocation, center);
-                    return { ...p, distance: distanceInKm };
-                })
-                .filter(p => p.distance <= p.operation_radius_km)
-                .sort((a, b) => a.distance - b.distance);
+            // ... (reszta logiki geofire) ...
         }
 
         if (event_start_date && event_end_date) {
-            const eventStart = new Date(event_start_date);
-            const eventEnd = new Date(event_end_date);
-            
-            const bookingsSnap = await db.collection('bookings')
-                .where('status', '==', 'confirmed')
-                .where('event_start_date', '<=', eventEnd)
-                .get();
-
-            const unavailableProfileIds = new Set();
-            bookingsSnap.forEach(doc => {
-                const booking = doc.data();
-                const bookingStart = booking.event_start_date.toDate();
-                if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
-                    unavailableProfileIds.add(booking.profile_id.toString());
-                }
-            });
-
+            // ... (logika sprawdzania dostępności) ...
+            // ✨ POPRAWKA: Porównujemy z numerycznym profile_id, a nie z doc_id
+             unavailableProfileIds.add(booking.profile_id); // Usunięto .toString()
+            // ...
+            // ✨ POPRAWKA: Filtrujemy po numerycznym profile_id
             profiles = profiles.filter(p => !unavailableProfileIds.has(p.profile_id));
         }
         res.json(profiles);
@@ -118,7 +104,11 @@ exports.createProfile = async (req, res) => {
 
         const { lat, lon } = await getGeocode(base_location);
         
+        // ✨ KLUCZOWY DODATEK: Pobierz nowe, unikalne numeryczne ID dla profilu
+        const newProfileId = await getNextProfileId();
+
         const newProfileData = {
+            profile_id: newProfileId, // ✨ ZAPISUJEMY NOWE, NUMERYCZNE ID
             owner_id: ownerId,
             food_truck_name,
             food_truck_description,
@@ -141,7 +131,7 @@ exports.createProfile = async (req, res) => {
 
         const newProfileRef = await db.collection('foodTrucks').add(newProfileData);
         
-        const fullProfileData = { profile_id: newProfileRef.id, ...newProfileData };
+        const fullProfileData = { doc_id: newProfileRef.id, ...newProfileData };
         
         if (fullProfileData.gallery_photo_urls && fullProfileData.gallery_photo_urls.length > 0) {
             const dataBuffer = Buffer.from(JSON.stringify(fullProfileData));
@@ -158,7 +148,6 @@ exports.createProfile = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera lub nieprawidłowa lokalizacja.' });
     }
 };
-
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
     // Upewnij się, że userId jest poprawnie parsowany do liczby, jeśli tak jest przechowywany w Firestore
@@ -239,11 +228,12 @@ exports.getMyProfiles = async (req, res) => {
 
 exports.getProfileById = async (req, res) => {
   try {
-    const { profileId } = req.params;
+    const { profileId } = req.params; // profileId to ID dokumentu (string)
     const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
 
     if (profileDoc.exists) {
-      res.json({ profile_id: profileDoc.id, ...profileDoc.data() });
+      // ✨ POPRAWKA: Używamy 'doc_id', aby nie nadpisać numerycznego 'profile_id'
+      res.json({ doc_id: profileDoc.id, ...profileDoc.data() });
     } else {
       res.status(404).json({ message: 'Nie znaleziono profilu o podanym ID.' });
     }
