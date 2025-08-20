@@ -1,35 +1,30 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' (Firestore) i narzędzia Firebase.
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
 
 exports.getMyConversations = async (req, res) => {
     const { userId } = req.user;
     try {
-        // ZMIENIONE: Zapytanie do Firestore o konwersacje, w których bierze udział użytkownik.
         const conversationsSnap = await db.collection('conversations')
             .where('participant_ids', 'array-contains', userId)
             .orderBy('last_message_at', 'desc')
             .get();
 
-        // UWAGA: Kolejny przykład "joinu" po stronie aplikacji.
         const conversations = await Promise.all(conversationsSnap.docs.map(async (doc) => {
             const convo = { conversation_id: doc.id, ...doc.data() };
             
-            // Znajdź ID drugiego uczestnika
             const recipientId = convo.participant_ids.find(id => id !== userId);
             let title = 'Konwersacja';
 
+            // Sprawdzamy, czy request_id istnieje i nie jest null
             if (convo.request_id) {
-                // Jeśli to konwersacja o rezerwację, pobierz nazwę food trucka
-                const bookingSnap = await db.collection('bookings').doc(convo.request_id.toString()).get();
+                const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
                 if (bookingSnap.exists) {
                     const profileSnap = await db.collection('foodTrucks').doc(bookingSnap.data().profile_id.toString()).get();
                     if (profileSnap.exists) {
-                        title = profileSnap.data().food_truck_name;
+                        title = profileSnap.data().food_truck_name || `Rezerwacja #${convo.request_id}`;
                     }
                 }
             } else if (recipientId) {
-                // Jeśli to zwykła konwersacja, pobierz nazwę drugiego użytkownika
                 const recipientSnap = await db.collection('users').doc(recipientId.toString()).get();
                 if (recipientSnap.exists) {
                     const recipientData = recipientSnap.data();
@@ -40,6 +35,7 @@ exports.getMyConversations = async (req, res) => {
             return {
                 conversation_id: convo.conversation_id,
                 request_id: convo.request_id || null,
+                last_message_at: convo.last_message_at,
                 title: title
             };
         }));
@@ -61,8 +57,7 @@ exports.initiateUserConversation = async (req, res) => {
             return res.status(400).json({ message: "Błędne dane." });
         }
         
-        // ZMIENIONE: Sprawdzanie istnienia konwersacji w Firestore
-        const participants = [senderId, recipientIdInt].sort(); // Sortujemy, aby zawsze mieć tę samą kolejność
+        const participants = [senderId, recipientIdInt].sort();
         const existingConvSnap = await db.collection('conversations')
             .where('participant_ids', '==', participants)
             .where('request_id', '==', null)
@@ -75,11 +70,14 @@ exports.initiateUserConversation = async (req, res) => {
         }
         
         const recipientDoc = await db.collection('users').doc(recipientIdInt.toString()).get();
+        if (!recipientDoc.exists) {
+            return res.status(404).json({ message: "Użytkownik docelowy nie istnieje." });
+        }
         const recipientData = recipientDoc.data();
         const title = recipientData.company_name || `${recipientData.first_name} ${recipientData.last_name}`;
         
         const newConvData = {
-            participant_ids: participants,
+            participant_ids: participants, // Poprawnie jako tablica
             title,
             request_id: null,
             created_at: FieldValue.serverTimestamp(),
@@ -97,11 +95,11 @@ exports.initiateUserConversation = async (req, res) => {
 
 exports.initiateBookingConversation = async (req, res) => {
     try {
-        const { requestId } = req.body;
+        // ID rezerwacji jest tekstem (string), nie liczbą
+        const { requestId } = req.body; 
         const senderId = req.user.userId;
 
-        // ZMIENIONE: Pobieranie rezerwacji z Firestore
-        const bookingDoc = await db.collection('bookings').doc(requestId.toString()).get();
+        const bookingDoc = await db.collection('bookings').doc(requestId).get();
         if (!bookingDoc.exists) {
             return res.status(404).json({ message: "Nie znaleziono rezerwacji." });
         }
@@ -116,7 +114,8 @@ exports.initiateBookingConversation = async (req, res) => {
             return res.status(403).json({ message: "Brak uprawnień."});
         }
         
-        const existingConvSnap = await db.collection('conversations').where('request_id', '==', parseInt(requestId, 10)).limit(1).get();
+        // ✨ POPRAWKA: Szukamy po requestId, które jest stringiem
+        const existingConvSnap = await db.collection('conversations').where('request_id', '==', requestId).limit(1).get();
         if (!existingConvSnap.empty) {
             const existingConv = existingConvSnap.docs[0];
             return res.status(200).json({ conversation_id: existingConv.id, ...existingConv.data() });
@@ -124,9 +123,11 @@ exports.initiateBookingConversation = async (req, res) => {
         
         const title = `Rezerwacja #${requestId}`;
         const newConvData = {
+            // ✨ POPRAWKA: Gwarantujemy, że participant_ids jest tablicą (array)
             participant_ids: [organizer_id, owner_id].sort(),
             title,
-            request_id: parseInt(requestId, 10),
+            // ✨ POPRAWKA: Przechowujemy requestId jako string
+            request_id: requestId, 
             created_at: FieldValue.serverTimestamp(),
             last_message_at: FieldValue.serverTimestamp()
         };
@@ -145,13 +146,11 @@ exports.getMessages = async (req, res) => {
         const { id } = req.params;
         const { userId } = req.user;
 
-        // ZMIENIONE: Sprawdzanie dostępu
         const convDoc = await db.collection('conversations').doc(id).get();
         if (!convDoc.exists || !convDoc.data().participant_ids.includes(userId)) {
             return res.status(403).json({ message: "Brak dostępu do tej konwersacji." });
         }
         
-        // ZMIENIONE: Pobieranie wiadomości z podkolekcji - o wiele prostsze!
         const messagesSnap = await db.collection('conversations').doc(id).collection('messages').orderBy('created_at', 'asc').get();
         const messages = messagesSnap.docs.map(doc => ({ message_id: doc.id, ...doc.data() }));
         
