@@ -1,6 +1,7 @@
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
 
+// Wklej to w miejsce starej funkcji getMyConversations
 exports.getMyConversations = async (req, res) => {
     const { userId } = req.user;
     try {
@@ -15,9 +16,9 @@ exports.getMyConversations = async (req, res) => {
             const recipientId = convo.participant_ids.find(id => id !== userId);
             let title = 'Konwersacja';
 
-            // Sprawdzamy, czy request_id istnieje i nie jest null
             if (convo.request_id) {
-                const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
+                // ✨ POPRAWKA: Dodajemy .toString(), aby zabezpieczyć się przed liczbami
+                const bookingSnap = await db.collection('bookings').doc(convo.request_id.toString()).get();
                 if (bookingSnap.exists) {
                     const profileSnap = await db.collection('foodTrucks').doc(bookingSnap.data().profile_id.toString()).get();
                     if (profileSnap.exists) {
