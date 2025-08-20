@@ -269,21 +269,60 @@ exports.updateCommissionStatus = async (req, res) => {
 
 exports.getAllConversations = async (req, res) => {
     try {
-        const convosSnap = await db.collection('conversations').orderBy('created_at', 'desc').get();
-        const conversations = await Promise.all(convoSnap.docs.map(async (doc) => {
-            const convo = { conversation_id: doc.id, ...doc.data() };
-            const p1Snap = await db.collection('users').doc(convo.participant_ids[0].toString()).get();
-            const p2Snap = await db.collection('users').doc(convo.participant_ids[1].toString()).get();
-            return {
-                ...convo,
-                participant1_email: p1Snap.data()?.email,
-                participant2_email: p2Snap.data()?.email,
+        // Używamy jednej, spójnej nazwy zmiennej: "conversationsSnap"
+        const conversationsSnap = await db.collection('conversations')
+                                          .orderBy('last_message_at', 'desc')
+                                          .get();
+
+        // Jeśli nie ma żadnych konwersacji, zwracamy pustą tablicę
+        if (conversationsSnap.empty) {
+            return res.json([]);
+        }
+
+        // Przetwarzamy każdą konwersację, aby dodać szczegóły o uczestnikach
+        const conversations = await Promise.all(conversationsSnap.docs.map(async (doc) => {
+            const conversationData = doc.data();
+            const participantDetails = [];
+
+            // WAŻNE: Zabezpieczenie przed błędami danych
+            // Sprawdzamy, czy pole "participant_ids" istnieje i jest tablicą
+            if (Array.isArray(conversationData.participant_ids)) {
+                
+                const participantPromises = conversationData.participant_ids.map(async (id) => {
+                    // Dodatkowe zabezpieczenie: sprawdzamy, czy ID nie jest puste
+                    if (id) { 
+                        const userDoc = await db.collection('users').doc(id.toString()).get();
+                        if (userDoc.exists) {
+                            const userData = userDoc.data();
+                            // Zwracamy tylko potrzebne dane, bez hasła itp.
+                            return {
+                                user_id: userData.user_id,
+                                first_name: userData.first_name,
+                                last_name: userData.last_name
+                            };
+                        }
+                    }
+                    return null; // Zwracamy null dla błędnych ID
+                });
+
+                const results = await Promise.all(participantPromises);
+                // Filtrujemy, aby usunąć wszystkie wyniki "null"
+                participantDetails.push(...results.filter(p => p !== null));
             }
+
+            return {
+                id: doc.id,
+                ...conversationData,
+                participants: participantDetails
+            };
         }));
+
         res.json(conversations);
+
     } catch (error) {
-        console.error("Błąd pobierania rozmów (admin):", error);
-        res.status(500).json({ message: "Błąd serwera." });
+        // Błąd został poprawnie obsłużony, aby nie zawiesić aplikacji
+        console.error('Błąd pobierania rozmów (admin):', error);
+        res.status(500).json({ message: 'Błąd serwera podczas pobierania rozmów.' });
     }
 };
 
