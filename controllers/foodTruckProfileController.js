@@ -259,21 +259,17 @@ exports.getMyProfiles = async (req, res) => {
 
 exports.getProfileById = async (req, res) => {
   try {
-    const { profileId } = req.params; // profileId to numeryczne ID (jako tekst z URL)
-    
-    const numericProfileId = parseInt(profileId, 10);
-    if (isNaN(numericProfileId)) {
-        return res.status(400).json({ message: 'Nieprawidłowe ID profilu.' });
-    }
+    // profileId z adresu URL to jest ID dokumentu (długi tekst)
+    const { profileId } = req.params;
 
-    // Szukamy dokumentu, który MA WEWNĄTRZ POLE 'profile_id' równe podanej wartości
-    const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', numericProfileId).limit(1).get();
+    // Używamy go bezpośrednio do znalezienia dokumentu w bazie
+    const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
 
-    if (!profileQuery.empty) {
-      const profileDoc = profileQuery.docs[0];
-      // Zwracamy ID dokumentu jako doc_id, aby nie nadpisać numerycznego profile_id
+    if (profileDoc.exists) {
+      // Zwracamy dane, dodając doc_id dla spójności z funkcją getAllProfiles
       res.json({ doc_id: profileDoc.id, ...profileDoc.data() });
     } else {
+      // Jeśli dokument o takim ID nie istnieje, zwracamy błąd 404
       res.status(404).json({ message: 'Nie znaleziono profilu o podanym ID.' });
     }
   } catch (error) {
