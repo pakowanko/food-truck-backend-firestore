@@ -49,6 +49,7 @@ exports.register = async (req, res) => {
             return res.status(409).json({ message: 'Użytkownik o tym adresie email już istnieje.' });
         }
 
+        // ... (logika stripe bez zmian) ...
         let stripeCustomerId = null;
         if (user_type === 'food_truck_owner' && process.env.STRIPE_SECRET_KEY) {
             const customer = await stripe.customers.create({
@@ -60,6 +61,7 @@ exports.register = async (req, res) => {
             });
             stripeCustomerId = customer.id;
         }
+
 
         const hashedPassword = await bcrypt.hash(password, 10);
         const verificationToken = crypto.randomBytes(32).toString('hex');
@@ -88,9 +90,24 @@ exports.register = async (req, res) => {
             role: 'user'
         };
 
-        console.log(`[Rejestracja] Próba zapisu nowego użytkownika ID: ${newUserId} dla email: ${email}`);
-        await newUserRef.set(newUserData);
-        console.log(`[Rejestracja] Pomyślnie zapisano użytkownika w Firestore.`);
+        // =================================================================
+        // ✨ TUTAJ JEST KLUCZOWA ZMIANA DIAGNOSTYCZNA ✨
+        // Zastąp starą linię 'await newUserRef.set(newUserData);' tym blokiem:
+        try {
+            // Pobieramy ID projektu bezpośrednio z aktywnego połączenia z bazą
+            const projectId = db.app.options.projectId;
+            console.log(`[DIAGNOSTYKA] Próba zapisu do projektu o ID: >>> ${projectId} <<<`);
+            
+            const writeResult = await newUserRef.set(newUserData);
+            
+            console.log(`[DIAGNOSTYKA] Zapis do projektu ${projectId} ZAKOŃCZONY POMYŚLNIE.`);
+            console.log(`[DIAGNOSTYKA] Czas zapisu:`, writeResult.writeTime.toDate());
+        } catch (dbError) {
+            console.error(`[DIAGNOSTYKA] KRYTYCZNY BŁĄD ZAPISU DO BAZY:`, dbError);
+            // Rzuć błąd dalej, aby główny catch go złapał i zatrzymał wysyłkę maila
+            throw dbError;
+        }
+        // =================================================================
         
         await sendVerificationEmail(email, verificationToken);
         await sendNewUserAdminNotification(userData);
@@ -99,7 +116,7 @@ exports.register = async (req, res) => {
         res.status(201).json({ message: 'Rejestracja pomyślna. Sprawdź swój e-mail, aby aktywować konto.' });
 
     } catch (error) {
-        console.error("!!! KRYTYCZNY BŁĄD PODCZAS REJESTRACJI:", error);
+        console.error("!!! KRYTYCZNY BŁĄD PODCZAS REJESTRACJI (główny catch):", error);
         res.status(500).json({ message: 'Wystąpił wewnętrzny błąd serwera podczas tworzenia konta.' });
     }
 };
