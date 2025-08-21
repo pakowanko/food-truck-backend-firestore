@@ -14,6 +14,7 @@ const {
 } = require('../utils/emailTemplate');
 const sgMail = require('@sendgrid/mail');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -22,7 +23,6 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 async function getNextUserId() {
     const counterRef = db.collection('counters').doc('userCounter');
-    
     return db.runTransaction(async (transaction) => {
         const counterDoc = await transaction.get(counterRef);
         if (!counterDoc.exists) {
@@ -66,11 +66,14 @@ exports.register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const verificationToken = crypto.randomBytes(32).toString('hex');
         
-        const newUserId = await getNextUserId();
+        const numericUserId = await getNextUserId();
         
-        const newUserRef = usersRef.doc(newUserId.toString());
+        // ✨ KLUCZOWA ZMIANA: Pozwalamy Firestore generować ID dokumentu
+        const newUserRef = usersRef.doc();
+        
         const newUserData = {
-            user_id: newUserId,
+            doc_id: newUserRef.id, // Zapisujemy alfanumeryczne ID
+            user_id: numericUserId, // Zapisujemy numeryczne ID
             email,
             password_hash: hashedPassword,
             user_type,
@@ -90,31 +93,15 @@ exports.register = async (req, res) => {
             role: 'user'
         };
 
-        // =================================================================
-        // ✨ BLOK DIAGNOSTYCZNY ✨
-        try {
-            // Poprawny sposób na odczytanie ID projektu z obiektu bazy danych
-            const projectId = (db.toJSON()).projectId;
-            console.log(`[DIAGNOSTYKA] Próba zapisu do projektu o ID: >>> ${projectId} <<<`);
-            
-            const writeResult = await newUserRef.set(newUserData);
-            
-            console.log(`[DIAGNOSTYKA] Zapis do projektu ${projectId} ZAKOŃCZONY POMYŚLNIE.`);
-            console.log(`[DIAGNOSTYKA] Czas zapisu:`, writeResult.writeTime.toDate());
-        } catch (dbError) {
-            console.error(`[DIAGNOSTYKA] KRYTYCZNY BŁĄD ZAPISU DO BAZY:`, dbError);
-            throw dbError;
-        }
-        // =================================================================
+        await newUserRef.set(newUserData);
         
         await sendVerificationEmail(email, verificationToken);
         await sendNewUserAdminNotification(userData);
         
-        console.log(`[Rejestracja] Pomyślnie wysłano e-maile dla ${email}.`);
         res.status(201).json({ message: 'Rejestracja pomyślna. Sprawdź swój e-mail, aby aktywować konto.' });
 
     } catch (error) {
-        console.error("!!! KRYTYCZNY BŁĄD PODCZAS REJESTRACJI (główny catch):", error);
+        console.error("!!! KRYTYCZNY BŁĄD PODCZAS REJESTRACJI:", error);
         res.status(500).json({ message: 'Wystąpił wewnętrzny błąd serwera podczas tworzenia konta.' });
     }
 };
@@ -141,7 +128,7 @@ exports.verifyEmail = async (req, res) => {
             verification_token: FieldValue.delete()
         });
 
-        const payload = { userId: user.user_id, email: user.email, user_type: user.user_type, role: user.role };
+        const payload = { userId: user.user_id, docId: user.doc_id, email: user.email, user_type: user.user_type, role: user.role };
         const jwtToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
         const redirectPath = user.user_type === 'food_truck_owner' ? '/create-profile' : '/dashboard';
 
@@ -176,7 +163,7 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: 'Nieprawidłowy email lub hasło.' });
         }
         
-        const payload = { userId: user.user_id, email: user.email, user_type: user.user_type, role: user.role };
+        const payload = { userId: user.user_id, docId: user.doc_id, email: user.email, user_type: user.user_type, role: user.role };
         const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
         
         res.json({ token, userId: user.user_id, email: user.email, user_type: user.user_type, company_name: user.company_name, role: user.role, first_name: user.first_name });
@@ -196,19 +183,17 @@ exports.googleLogin = async (req, res) => {
         const usersRef = db.collection('users');
         let userSnap = await usersRef.where('email', '==', email).limit(1).get();
         let user;
-        let docId;
 
         if (userSnap.empty) {
-            console.log(`Użytkownik Google nie istnieje, tworzenie nowego konta dla: ${email}`);
             const randomPassword = crypto.randomBytes(32).toString('hex');
             const hashedPassword = await bcrypt.hash(randomPassword, 10);
             
-            const newUserId = await getNextUserId();
-            docId = newUserId.toString();
-            const newUserRef = usersRef.doc(docId);
+            const numericUserId = await getNextUserId();
+            const newUserRef = usersRef.doc();
             
             const newUserData = {
-                user_id: newUserId,
+                doc_id: newUserRef.id,
+                user_id: numericUserId,
                 email,
                 password_hash: hashedPassword,
                 user_type: 'organizer',
@@ -225,7 +210,6 @@ exports.googleLogin = async (req, res) => {
             await sendGoogleWelcomeEmail(email, given_name);
             await sendNewUserAdminNotification({ email, first_name: given_name, last_name: family_name, user_type: 'organizer' });
         } else {
-            docId = userSnap.docs[0].id;
             user = userSnap.docs[0].data();
         }
 
@@ -233,7 +217,7 @@ exports.googleLogin = async (req, res) => {
             return res.status(403).json({ message: 'Twoje konto zostało zablokowane.' });
         }
 
-        const appPayload = { userId: user.user_id, email: user.email, user_type: user.user_type, role: user.role };
+        const appPayload = { userId: user.user_id, docId: user.doc_id, email: user.email, user_type: user.user_type, role: user.role };
         const token = jwt.sign(appPayload, process.env.JWT_SECRET, { expiresIn: '7d' });
         
         res.json({ token, userId: user.user_id, email: user.email, user_type: user.user_type, company_name: user.company_name, role: user.role, first_name: user.first_name });
@@ -245,8 +229,10 @@ exports.googleLogin = async (req, res) => {
 
 exports.getProfile = async (req, res) => {
     try {
-        const userDoc = await db.collection('users').doc(req.user.userId.toString()).get();
-        if (userDoc.exists) {
+        // ✨ KLUCZOWA ZMIANA: Używamy uniwersalnej funkcji
+        const userDoc = await getDocByNumericId('users', 'user_id', req.user.userId);
+        
+        if (userDoc && userDoc.exists) {
             const { password_hash, ...profileData } = userDoc.data();
             res.json(profileData);
         } else {
@@ -269,7 +255,7 @@ exports.requestPasswordReset = async (req, res) => {
         
         const userDoc = userSnap.docs[0];
         const token = crypto.randomBytes(32).toString('hex');
-        const expires = Timestamp.fromMillis(Date.now() + 3600000); // 1 godzina
+        const expires = Timestamp.fromMillis(Date.now() + 3600000);
 
         await userDoc.ref.update({
             reset_password_token: token,
@@ -320,9 +306,9 @@ exports.loginWithReminderToken = async (req, res) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const userDoc = await db.collection('users').doc(decoded.userId.toString()).get();
+        const userDoc = await getDocByNumericId('users', 'user_id', decoded.userId);
         
-        if (!userDoc.exists) {
+        if (!userDoc || !userDoc.exists) {
             return res.status(404).json({ message: 'Użytkownik nie znaleziony.' });
         }
         const user = userDoc.data();
@@ -334,7 +320,7 @@ exports.loginWithReminderToken = async (req, res) => {
             return res.status(403).json({ message: 'Twoje konto zostało zablokowane.' });
         }
         
-        const payload = { userId: user.user_id, email: user.email, user_type: user.user_type, role: user.role };
+        const payload = { userId: user.user_id, docId: user.doc_id, email: user.email, user_type: user.user_type, role: user.role };
         const newJwtToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
