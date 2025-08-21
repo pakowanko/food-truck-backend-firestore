@@ -22,7 +22,8 @@ exports.getMyConversations = async (req, res) => {
             const recipientId = convo.participant_ids.find(id => id !== userId);
             let title = 'Konwersacja';
 
-            if (convo.request_id) {
+            // ✨ OSTATECZNA POPRAWKA: Sprawdzamy, czy request_id jest poprawnym, niepustym stringiem
+            if (convo.request_id && typeof convo.request_id === 'string' && convo.request_id.length > 0) {
                 const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
                 if (bookingSnap.exists) {
                     const profileSnap = await getDocByNumericId('foodTrucks', 'profile_id', bookingSnap.data().profile_id);
