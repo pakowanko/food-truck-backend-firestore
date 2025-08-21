@@ -1,8 +1,4 @@
-/*
-================================================
-Poprawiony plik: /controllers/conversationController.js
-================================================
-*/
+// plik: /controllers/conversationController.js
 
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
@@ -22,7 +18,6 @@ exports.getMyConversations = async (req, res) => {
             const recipientId = convo.participant_ids.find(id => id !== userId);
             let title = 'Konwersacja';
 
-            // ✨ OSTATECZNA POPRAWKA: Sprawdzamy, czy request_id jest poprawnym, niepustym stringiem
             if (convo.request_id && typeof convo.request_id === 'string' && convo.request_id.length > 0) {
                 const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
                 if (bookingSnap.exists) {
@@ -164,5 +159,47 @@ exports.getMessages = async (req, res) => {
     } catch (error) { 
         console.error("Błąd pobierania wiadomości:", error); 
         res.status(500).json({ message: "Błąd serwera." }); 
+    }
+};
+
+// ✨ NOWA FUNKCJA DO WYSYŁANIA WIADOMOŚCI ✨
+exports.postMessage = async (req, res) => {
+    const { id: conversationId } = req.params;
+    const { message_content } = req.body;
+    const { userId } = req.user;
+
+    try {
+        const convDoc = await db.collection('conversations').doc(conversationId).get();
+        if (!convDoc.exists || !convDoc.data().participant_ids.includes(userId)) {
+            return res.status(403).json({ message: "Brak dostępu do tej konwersacji." });
+        }
+
+        const newMessageData = {
+            sender_id: userId,
+            message_content,
+            created_at: FieldValue.serverTimestamp(),
+        };
+
+        const messageRef = await db.collection('conversations').doc(conversationId).collection('messages').add(newMessageData);
+        
+        await db.collection('conversations').doc(conversationId).update({
+            last_message_at: FieldValue.serverTimestamp()
+        });
+
+        const finalMessage = {
+            message_id: messageRef.id,
+            ...newMessageData,
+            created_at: new Date()
+        };
+
+        // Rozsyłamy wiadomość przez Socket.IO
+        const io = req.io;
+        io.to(conversationId).emit('newMessage', finalMessage);
+
+        res.status(201).json(finalMessage);
+
+    } catch (error) {
+        console.error("Błąd podczas wysyłania wiadomości:", error);
+        res.status(500).json({ message: "Błąd serwera podczas wysyłania wiadomości." });
     }
 };
