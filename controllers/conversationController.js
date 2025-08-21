@@ -1,4 +1,8 @@
-// plik: /controllers/conversationController.js
+/*
+================================================
+Poprawiony plik: /controllers/conversationController.js
+================================================
+*/
 
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
