@@ -26,8 +26,9 @@ async function getNextUserId() {
     return db.runTransaction(async (transaction) => {
         const counterDoc = await transaction.get(counterRef);
         if (!counterDoc.exists) {
-            transaction.set(counterRef, { currentId: 1 });
-            return 1;
+            const startId = 200; 
+            transaction.set(counterRef, { currentId: startId });
+            return startId;
         }
         const newId = parseInt(counterDoc.data().currentId, 10) + 1;
         transaction.update(counterRef, { currentId: newId });
@@ -35,6 +36,7 @@ async function getNextUserId() {
     });
 }
 
+// --- Funkcje register, verifyEmail, login, googleLogin, getProfile - bez zmian ---
 exports.register = async (req, res) => {
     const userData = req.body;
     const { 
@@ -67,13 +69,11 @@ exports.register = async (req, res) => {
         const verificationToken = crypto.randomBytes(32).toString('hex');
         
         const numericUserId = await getNextUserId();
-        
-        // ✨ KLUCZOWA ZMIANA: Pozwalamy Firestore generować ID dokumentu
         const newUserRef = usersRef.doc();
         
         const newUserData = {
-            doc_id: newUserRef.id, // Zapisujemy alfanumeryczne ID
-            user_id: numericUserId, // Zapisujemy numeryczne ID
+            doc_id: newUserRef.id,
+            user_id: numericUserId,
             email,
             password_hash: hashedPassword,
             user_type,
@@ -105,7 +105,6 @@ exports.register = async (req, res) => {
         res.status(500).json({ message: 'Wystąpił wewnętrzny błąd serwera podczas tworzenia konta.' });
     }
 };
-
 exports.verifyEmail = async (req, res) => {
     const { token } = req.query;
     try {
@@ -138,7 +137,6 @@ exports.verifyEmail = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera.' });
     }
 };
-
 exports.login = async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -172,7 +170,6 @@ exports.login = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera.' });
     }
 };
-
 exports.googleLogin = async (req, res) => {
     const { credential } = req.body;
     try {
@@ -226,10 +223,8 @@ exports.googleLogin = async (req, res) => {
         res.status(500).json({ message: "Błąd serwera podczas logowania przez Google." });
     }
 };
-
 exports.getProfile = async (req, res) => {
     try {
-        // ✨ KLUCZOWA ZMIANA: Używamy uniwersalnej funkcji
         const userDoc = await getDocByNumericId('users', 'user_id', req.user.userId);
         
         if (userDoc && userDoc.exists) {
@@ -244,45 +239,58 @@ exports.getProfile = async (req, res) => {
     }
 };
 
+
+// --- Funkcje z dodanym logowaniem diagnostycznym ---
+
 exports.requestPasswordReset = async (req, res) => {
     const { email } = req.body;
+    console.log(`[RESET HASŁA] Otrzymano prośbę o reset dla email: ${email}`);
     try {
         const userSnap = await db.collection('users').where('email', '==', email).limit(1).get();
 
         if (userSnap.empty) {
+            console.log(`[RESET HASŁA] Nie znaleziono użytkownika. Wysyłam standardową odpowiedź.`);
             return res.json({ message: 'Jeśli konto o podanym adresie email istnieje, link do resetu hasła został wysłany.' });
         }
         
         const userDoc = userSnap.docs[0];
+        console.log(`[RESET HASŁA] Znaleziono użytkownika: ${userDoc.id}`);
         const token = crypto.randomBytes(32).toString('hex');
-        const expires = Timestamp.fromMillis(Date.now() + 3600000);
+        const expires = Timestamp.fromMillis(Date.now() + 3600000); // 1 godzina
 
+        console.log(`[RESET HASŁA] Generowanie tokena i daty wygaśnięcia...`);
         await userDoc.ref.update({
             reset_password_token: token,
             reset_password_expires: expires
         });
+        console.log(`[RESET HASŁA] Pomyślnie zaktualizowano dokument użytkownika w bazie.`);
 
         await sendPasswordResetEmail(email, token);
+        console.log(`[RESET HASŁA] Pomyślnie wysłano email z linkiem do resetu.`);
         res.json({ message: 'Jeśli konto o podanym adresie email istnieje, link do resetu hasła został wysłany.' });
     } catch (error) {
-        console.error("Błąd podczas prośby o reset hasła:", error);
+        console.error("[RESET HASŁA] KRYTYCZNY BŁĄD w 'requestPasswordReset':", error);
         res.status(500).json({ message: "Błąd serwera." });
     }
 };
 
 exports.resetPassword = async (req, res) => {
     const { token, newPassword } = req.body;
+    console.log(`[RESET HASŁA] Otrzymano próbę zmiany hasła z tokenem: ${token ? token.substring(0, 10) + '...' : 'BRAK TOKENA'}`);
     try {
         const userSnap = await db.collection('users')
             .where('reset_password_token', '==', token)
             .where('reset_password_expires', '>', Timestamp.now())
             .limit(1).get();
+        console.log(`[RESET HASŁA] Wykonano zapytanie do bazy w poszukiwaniu tokena.`);
 
         if (userSnap.empty) {
+            console.log(`[RESET HASŁA] Nie znaleziono pasującego, aktywnego tokena w bazie.`);
             return res.status(400).json({ message: 'Token do resetu hasła jest nieprawidłowy lub wygasł.' });
         }
         
         const userDoc = userSnap.docs[0];
+        console.log(`[RESET HASŁA] Znaleziono użytkownika do zmiany hasła: ${userDoc.id}`);
         const hashedPassword = await bcrypt.hash(newPassword, 10);
 
         await userDoc.ref.update({
@@ -290,10 +298,15 @@ exports.resetPassword = async (req, res) => {
             reset_password_token: FieldValue.delete(),
             reset_password_expires: FieldValue.delete()
         });
+        console.log(`[RESET HASŁA] Hasło zostało pomyślnie zmienione i tokeny usunięte.`);
 
         res.json({ message: 'Hasło zostało pomyślnie zmienione.' });
     } catch (error) {
-        console.error("Błąd podczas resetowania hasła:", error);
+        console.error("[RESET HASŁA] KRYTYCZNY BŁĄD w 'resetPassword':", error);
+        // ✨ WAŻNE: Sprawdź, czy w logach nie pojawi się błąd o braku indeksu!
+        if (error.message && error.message.includes('requires an index')) {
+             console.error("!!! WYGLĄDA NA TO, ŻE BRAKUJE INDEKSU W FIRESTORE. Sprawdź logi powyżej, aby znaleźć link do jego utworzenia.");
+        }
         res.status(500).json({ message: "Błąd serwera." });
     }
 };
