@@ -1,10 +1,12 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' i narzędzia Firebase.
+// plik: /controllers/cronController.js
+
 const db = require('../firestore');
 const { Timestamp } = require('firebase-admin/firestore');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const jwt = require('jsonwebtoken');
 const { sendPackagingReminderEmail, sendCreateProfileReminderEmail, sendBookingReminderEmail } = require('../utils/emailTemplate');
 const { PubSub } = require('@google-cloud/pubsub');
+// ✨ KROK 1: Importujemy naszą uniwersalną funkcję
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 const pubSubClient = new PubSub();
 const topicName = 'reels-generation-topic';
@@ -12,19 +14,25 @@ const topicName = 'reels-generation-topic';
 exports.sendDailyReminders = async (req, res) => {
     console.log('[Cron] Uruchomiono zadanie wysyłania przypomnień o opakowaniach.');
     try {
-        // ZMIENIONE: Logika dla Firestore
         const now = new Date();
-        const dateIn7Days = new Date(now.setDate(now.getDate() + 7));
-        const dateIn14Days = new Date(now.setDate(now.getDate() + 7)); // +7 again to get +14 total
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        
+        const dateIn7Days = new Date(today);
+        dateIn7Days.setDate(today.getDate() + 7);
+        const timestampIn7Days = Timestamp.fromDate(dateIn7Days);
+
+        const dateIn14Days = new Date(today);
+        dateIn14Days.setDate(today.getDate() + 14);
+        const timestampIn14Days = Timestamp.fromDate(dateIn14Days);
 
         const bookingsIn7DaysSnap = await db.collection('bookings')
             .where('status', '==', 'confirmed')
-            .where('event_start_date', '==', dateIn7Days)
+            .where('event_start_date', '==', timestampIn7Days)
             .get();
 
         const bookingsIn14DaysSnap = await db.collection('bookings')
             .where('status', '==', 'confirmed')
-            .where('event_start_date', '==', dateIn14Days)
+            .where('event_start_date', '==', timestampIn14Days)
             .get();
 
         const allBookings = [...bookingsIn7DaysSnap.docs, ...bookingsIn14DaysSnap.docs];
@@ -36,11 +44,12 @@ exports.sendDailyReminders = async (req, res) => {
 
         for (const doc of allBookings) {
             const booking = doc.data();
-            const profileSnap = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
-            if (profileSnap.exists) {
-                const ownerSnap = await db.collection('users').doc(profileSnap.data().owner_id.toString()).get();
-                if (ownerSnap.exists) {
-                    await sendPackagingReminderEmail(ownerSnap.data().email, profileSnap.data().food_truck_name);
+            // ✨ KROK 2: Używamy nowej funkcji do znalezienia profilu i właściciela
+            const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
+            if (profileDoc && profileDoc.exists) {
+                const ownerDoc = await getDocByNumericId('users', 'user_id', profileDoc.data().owner_id);
+                if (ownerDoc && ownerDoc.exists) {
+                    await sendPackagingReminderEmail(ownerDoc.data().email, profileDoc.data().food_truck_name);
                 }
             }
         }
@@ -56,18 +65,14 @@ exports.sendDailyReminders = async (req, res) => {
 exports.generateDailyInvoices = async (req, res) => {
     console.log('[Cron] Uruchomiono zadanie generowania faktur.');
     try {
-        // ZMIENIONE: Logika dla Firestore
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
         
-        // Firestore nie pozwala na nierówności na różnych polach. Musimy filtrować po stronie serwera.
-        // Najpierw pobieramy wszystkie potwierdzone, niezafakturowane rezerwacje.
         const bookingsSnap = await db.collection('bookings')
             .where('status', '==', 'confirmed')
             .where('invoice_generated', '==', false)
             .get();
 
-        // Teraz filtrujemy w kodzie te, które zakończyły się wczoraj.
         const bookingsToInvoice = bookingsSnap.docs.filter(doc => {
             const endDate = doc.data().event_end_date.toDate();
             return endDate.toDateString() === yesterday.toDateString();
@@ -78,22 +83,18 @@ exports.generateDailyInvoices = async (req, res) => {
             return res.status(200).send('Brak rezerwacji do zafakturowania.');
         }
 
-        // Reszta logiki Stripe pozostaje bez zmian, ale pobieramy dane z Firestore
-        const PLATFORM_COMMISSION_NET = 200.00;
-        const vatRate = 23; // Załóżmy 23% VAT
-        const commissionGross = PLATFORM_COMMISSION_NET * (1 + vatRate / 100);
-
         for (const doc of bookingsToInvoice) {
             const booking = { id: doc.id, ...doc.data() };
-            const profileSnap = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
-            if (profileSnap.exists) {
-                const ownerSnap = await db.collection('users').doc(profileSnap.data().owner_id.toString()).get();
-                const owner = ownerSnap.data();
-                
-                if (process.env.STRIPE_SECRET_KEY && owner.stripe_customer_id) {
-                    // ... logika tworzenia i wysyłania faktury Stripe ...
-                    await doc.ref.update({ invoice_generated: true });
-                    console.log(`[Cron] Wygenerowano fakturę dla rezerwacji #${booking.id}`);
+            const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
+            if (profileDoc && profileDoc.exists) {
+                const ownerDoc = await getDocByNumericId('users', 'user_id', profileDoc.data().owner_id);
+                if (ownerDoc && ownerDoc.exists) {
+                    const owner = ownerDoc.data();
+                    if (process.env.STRIPE_SECRET_KEY && owner.stripe_customer_id) {
+                        // ... logika tworzenia i wysyłania faktury Stripe ...
+                        await doc.ref.update({ invoice_generated: true });
+                        console.log(`[Cron] Wygenerowano fakturę dla rezerwacji #${booking.id}`);
+                    }
                 }
             }
         }
@@ -108,10 +109,8 @@ exports.generateDailyInvoices = async (req, res) => {
 exports.sendProfileCreationReminders = async (req, res) => {
     console.log('[Cron] Uruchomiono zadanie wysyłania przypomnień o utworzeniu profilu.');
     try {
-        // ZMIENIONE: Ta logika jest trudniejsza w Firestore (brak LEFT JOIN).
-        // Musimy pobrać wszystkich właścicieli, a potem sprawdzić, kto nie ma profilu.
         const ownersSnap = await db.collection('users').where('user_type', '==', 'food_truck_owner').where('is_verified', '==', true).get();
-        const allOwners = ownersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const allOwners = ownersSnap.docs.map(doc => doc.data());
 
         const usersWithoutProfiles = [];
         for (const user of allOwners) {
@@ -127,7 +126,9 @@ exports.sendProfileCreationReminders = async (req, res) => {
         }
 
         for (const user of usersWithoutProfiles) {
-            // ... reszta logiki z JWT i wysyłką e-maila jest taka sama ...
+            const payload = { userId: user.user_id, email: user.email };
+            const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+            await sendCreateProfileReminderEmail(user.email, user.first_name, token);
         }
 
         console.log(`[Cron] Wysłano pomyślnie ${usersWithoutProfiles.length} przypomnień.`);
@@ -140,14 +141,27 @@ exports.sendProfileCreationReminders = async (req, res) => {
 };
 
 exports.publishAllExistingProfiles = async (req, res) => {
-    // ... ta funkcja musi być zaktualizowana, aby pobierać z Firestore, a nie pool ...
     try {
         const profilesSnap = await db.collection('foodTrucks').get();
-        const profiles = profilesSnap.docs.map(doc => ({ profile_id: doc.id, ...doc.data() }));
-        // ... reszta logiki Pub/Sub pozostaje bez zmian ...
-        res.status(200).send(`Zakończono zadanie.`);
+        if (profilesSnap.empty) {
+            return res.status(200).send('Brak profili do opublikowania.');
+        }
+
+        for (const doc of profilesSnap.docs) {
+            const profileData = { doc_id: doc.id, ...doc.data() };
+            if (profileData.gallery_photo_urls && profileData.gallery_photo_urls.length > 0) {
+                const dataBuffer = Buffer.from(JSON.stringify(profileData));
+                try {
+                    await pubSubClient.topic(topicName).publishMessage({ data: dataBuffer });
+                } catch (pubSubError) {
+                    console.error(`[Cron] Nie udało się opublikować profilu ${profileData.doc_id}: ${pubSubError.message}`);
+                }
+            }
+        }
+        res.status(200).send(`Zakończono zadanie publikowania profili.`);
     } catch (error) {
-        // ... obsługa błędów
+        console.error('[Cron] Błąd podczas publikowania profili:', error);
+        res.status(500).send('Błąd serwera podczas zadania cron.');
     }
 };
 
@@ -166,22 +180,21 @@ exports.sendPendingBookingReminders = async (req, res) => {
             return res.status(200).send('Brak rezerwacji do przypomnienia.');
         }
 
-        // Grupuj rezerwacje per właściciel
         const requestsByOwner = {};
         for (const doc of pendingRequestsSnap.docs) {
             const request = { request_id: doc.id, ...doc.data() };
-            const profileSnap = await db.collection('foodTrucks').doc(request.profile_id.toString()).get();
-            if (profileSnap.exists) {
-                const ownerId = profileSnap.data().owner_id;
-                const ownerSnap = await db.collection('users').doc(ownerId.toString()).get();
-                if(ownerSnap.exists()){
-                    const ownerEmail = ownerSnap.data().email;
+            const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', request.profile_id);
+            if (profileDoc && profileDoc.exists) {
+                const ownerId = profileDoc.data().owner_id;
+                const ownerDoc = await getDocByNumericId('users', 'user_id', ownerId);
+                if(ownerDoc && ownerDoc.exists){
+                    const ownerEmail = ownerDoc.data().email;
                     if (!requestsByOwner[ownerEmail]) {
                         requestsByOwner[ownerEmail] = [];
                     }
                     requestsByOwner[ownerEmail].push({
                         ...request,
-                        food_truck_name: profileSnap.data().food_truck_name,
+                        food_truck_name: profileDoc.data().food_truck_name,
                     });
                 }
             }

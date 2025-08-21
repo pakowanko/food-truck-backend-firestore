@@ -1,8 +1,11 @@
+// plik: /controllers/foodTruckProfileController.js
+
 const db = require('../firestore');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
-const { getGeocode, geofire } = require('../utils/geoUtils'); // Upewnij się, że ten plik pomocniczy istnieje i jest poprawny
+const { getGeocode, geofire } = require('../utils/geoUtils');
 const { Storage } = require('@google-cloud/storage');
 const { PubSub } = require('@google-cloud/pubsub');
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 const pubSubClient = new PubSub();
 const reelsTopicName = 'reels-generation-topic';
@@ -11,14 +14,12 @@ const postsTopicName = 'post-publication-topic';
 const storage = new Storage();
 const bucketName = process.env.GCS_BUCKET_NAME;
 
-// Funkcja pomocnicza do pobierania następnego unikalnego, numerycznego ID dla profilu
 async function getNextProfileId() {
     const counterRef = db.collection('counters').doc('profileCounter');
     
     return db.runTransaction(async (transaction) => {
         const counterDoc = await transaction.get(counterRef);
         if (!counterDoc.exists) {
-            // Jeśli licznik nie istnieje, zaczynamy od bezpiecznej, wysokiej liczby
             const startId = 1000;
             transaction.set(counterRef, { currentId: startId });
             return startId;
@@ -62,7 +63,6 @@ exports.getAllProfiles = async (req, res) => {
         
         if (!postal_code) {
             const snapshot = await query.orderBy('food_truck_name').get();
-            // Zwracamy numeryczne profile_id oraz ID dokumentu jako doc_id
             profiles = snapshot.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
         } else {
             const { lat, lon } = await getGeocode(postal_code);
@@ -111,7 +111,7 @@ exports.getAllProfiles = async (req, res) => {
                 const booking = doc.data();
                 const bookingStart = booking.event_start_date.toDate();
                 if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
-                    unavailableProfileIds.add(booking.profile_id); // Porównujemy numeryczne ID
+                    unavailableProfileIds.add(booking.profile_id);
                 }
             });
 
@@ -123,6 +123,7 @@ exports.getAllProfiles = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera podczas wyszukiwania profili.' });
     }
 };
+
 exports.createProfile = async (req, res) => {
     const ownerId = parseInt(req.user.userId, 10);
     let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
@@ -135,11 +136,13 @@ exports.createProfile = async (req, res) => {
 
         const { lat, lon } = await getGeocode(base_location);
         
-        // ✨ KLUCZOWY DODATEK: Pobierz nowe, unikalne numeryczne ID dla profilu
         const newProfileId = await getNextProfileId();
 
+        const newProfileRef = db.collection('foodTrucks').doc();
+
         const newProfileData = {
-            profile_id: newProfileId, // ✨ ZAPISUJEMY NOWE, NUMERYCZNE ID
+            doc_id: newProfileRef.id,
+            profile_id: newProfileId,
             owner_id: ownerId,
             food_truck_name,
             food_truck_description,
@@ -160,12 +163,10 @@ exports.createProfile = async (req, res) => {
             newProfileData.profile_image_url = newProfileData.gallery_photo_urls[0] || null;
         }
 
-        const newProfileRef = await db.collection('foodTrucks').add(newProfileData);
+        await newProfileRef.set(newProfileData);
         
-        const fullProfileData = { doc_id: newProfileRef.id, ...newProfileData };
-        
-        if (fullProfileData.gallery_photo_urls && fullProfileData.gallery_photo_urls.length > 0) {
-            const dataBuffer = Buffer.from(JSON.stringify(fullProfileData));
+        if (newProfileData.gallery_photo_urls && newProfileData.gallery_photo_urls.length > 0) {
+            const dataBuffer = Buffer.from(JSON.stringify(newProfileData));
             try {
                 await pubSubClient.topic(reelsTopicName).publishMessage({ data: dataBuffer });
                 await pubSubClient.topic(postsTopicName).publishMessage({ data: dataBuffer });
@@ -173,15 +174,15 @@ exports.createProfile = async (req, res) => {
                 console.error(`Nie udało się wysłać zlecenia do Pub/Sub: ${error.message}`);
             }
         }
-        res.status(201).json(fullProfileData);
+        res.status(201).json(newProfileData);
     } catch (error) {
         console.error('Błąd dodawania profilu food trucka:', error);
         res.status(500).json({ message: 'Błąd serwera lub nieprawidłowa lokalizacja.' });
     }
 };
+
 exports.updateProfile = async (req, res) => {
     const { profileId } = req.params;
-    // Upewnij się, że userId jest poprawnie parsowany do liczby, jeśli tak jest przechowywany w Firestore
     const ownerId = parseInt(req.user.userId, 10); 
     let { food_truck_name, food_truck_description, base_location, operation_radius_km, offer, long_term_rental_available } = req.body;
 
@@ -198,14 +199,11 @@ exports.updateProfile = async (req, res) => {
 
         const existingData = profileDoc.data();
         
-        // ✨ KLUCZOWA POPRAWKA ✨
         let galleryPhotoUrls;
         if (req.files && req.files.length > 0) {
-            // Jeśli są nowe pliki, prześlij je i one zastąpią starą galerię
             const uploadPromises = req.files.map(uploadFileToGCS);
             galleryPhotoUrls = await Promise.all(uploadPromises);
         } else {
-            // Jeśli nie ma nowych plików, zachowaj istniejącą galerię
             galleryPhotoUrls = existingData.gallery_photo_urls || [];
         }
         
@@ -221,8 +219,8 @@ exports.updateProfile = async (req, res) => {
             operation_radius_km: parseInt(operation_radius_km) || existingData.operation_radius_km,
             offer: offer || existingData.offer,
             long_term_rental_available: isLongTerm,
-            gallery_photo_urls: galleryPhotoUrls, // ✅ Zmienna zawsze istnieje
-            profile_image_url: galleryPhotoUrls[0] || existingData.profile_image_url || null, // Ustawia pierwsze zdjęcie z galerii jako profilowe
+            gallery_photo_urls: galleryPhotoUrls,
+            profile_image_url: galleryPhotoUrls[0] || existingData.profile_image_url || null,
             location: (lat && lon) ? new GeoPoint(lat, lon) : existingData.location,
             geohash: (lat && lon) ? geofire.geohashForLocation([lat, lon]) : existingData.geohash,
         };
@@ -230,7 +228,7 @@ exports.updateProfile = async (req, res) => {
         await profileRef.update(updateData);
         
         const updatedDoc = await profileRef.get();
-        res.json({ profile_id: updatedDoc.id, ...updatedDoc.data() });
+        res.json({ doc_id: updatedDoc.id, ...updatedDoc.data() });
     } catch (error) {
         console.error("Błąd podczas aktualizacji profilu:", error);
         res.status(500).json({ message: 'Błąd serwera lub nieprawidłowa lokalizacja.' });
@@ -249,7 +247,7 @@ exports.getMyProfiles = async (req, res) => {
             .orderBy('food_truck_name')
             .get();
             
-        const profiles = profilesSnap.docs.map(doc => ({ profile_id: doc.id, ...doc.data() }));
+        const profiles = profilesSnap.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
         res.json(profiles);
     } catch (error) {
         console.error("Błąd w /api/profiles/my-profiles:", error);
@@ -259,17 +257,12 @@ exports.getMyProfiles = async (req, res) => {
 
 exports.getProfileById = async (req, res) => {
   try {
-    // profileId z adresu URL to jest ID dokumentu (długi tekst)
     const { profileId } = req.params;
-
-    // Używamy go bezpośrednio do znalezienia dokumentu w bazie
     const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
 
     if (profileDoc.exists) {
-      // Zwracamy dane, dodając doc_id dla spójności z funkcją getAllProfiles
       res.json({ doc_id: profileDoc.id, ...profileDoc.data() });
     } else {
-      // Jeśli dokument o takim ID nie istnieje, zwracamy błąd 404
       res.status(404).json({ message: 'Nie znaleziono profilu o podanym ID.' });
     }
   } catch (error) {

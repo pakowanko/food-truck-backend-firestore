@@ -1,7 +1,10 @@
+// plik: /controllers/conversationController.js
+
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
+// ✨ KROK 1: Importujemy naszą uniwersalną funkcję
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
-// Wklej to w miejsce starej funkcji getMyConversations
 exports.getMyConversations = async (req, res) => {
     const { userId } = req.user;
     try {
@@ -17,17 +20,18 @@ exports.getMyConversations = async (req, res) => {
             let title = 'Konwersacja';
 
             if (convo.request_id) {
-                // ✨ POPRAWKA: Dodajemy .toString(), aby zabezpieczyć się przed liczbami
-                const bookingSnap = await db.collection('bookings').doc(convo.request_id.toString()).get();
+                const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
                 if (bookingSnap.exists) {
-                    const profileSnap = await db.collection('foodTrucks').doc(bookingSnap.data().profile_id.toString()).get();
-                    if (profileSnap.exists) {
+                    // ✨ KROK 2: Używamy nowej funkcji do znalezienia profilu
+                    const profileSnap = await getDocByNumericId('foodTrucks', 'profile_id', bookingSnap.data().profile_id);
+                    if (profileSnap && profileSnap.exists) {
                         title = profileSnap.data().food_truck_name || `Rezerwacja #${convo.request_id}`;
                     }
                 }
             } else if (recipientId) {
-                const recipientSnap = await db.collection('users').doc(recipientId.toString()).get();
-                if (recipientSnap.exists) {
+                // ✨ KROK 3: Używamy nowej funkcji do znalezienia odbiorcy
+                const recipientSnap = await getDocByNumericId('users', 'user_id', recipientId);
+                if (recipientSnap && recipientSnap.exists) {
                     const recipientData = recipientSnap.data();
                     title = recipientData.company_name || `${recipientData.first_name} ${recipientData.last_name}`;
                 }
@@ -70,15 +74,16 @@ exports.initiateUserConversation = async (req, res) => {
             return res.status(200).json({ conversation_id: existingConv.id, ...existingConv.data() });
         }
         
-        const recipientDoc = await db.collection('users').doc(recipientIdInt.toString()).get();
-        if (!recipientDoc.exists) {
+        // ✨ KROK 4: Używamy nowej funkcji do znalezienia odbiorcy
+        const recipientDoc = await getDocByNumericId('users', 'user_id', recipientIdInt);
+        if (!recipientDoc || !recipientDoc.exists) {
             return res.status(404).json({ message: "Użytkownik docelowy nie istnieje." });
         }
         const recipientData = recipientDoc.data();
         const title = recipientData.company_name || `${recipientData.first_name} ${recipientData.last_name}`;
         
         const newConvData = {
-            participant_ids: participants, // Poprawnie jako tablica
+            participant_ids: participants,
             title,
             request_id: null,
             created_at: FieldValue.serverTimestamp(),
@@ -96,7 +101,6 @@ exports.initiateUserConversation = async (req, res) => {
 
 exports.initiateBookingConversation = async (req, res) => {
     try {
-        // ID rezerwacji jest tekstem (string), nie liczbą
         const { requestId } = req.body; 
         const senderId = req.user.userId;
 
@@ -106,7 +110,11 @@ exports.initiateBookingConversation = async (req, res) => {
         }
         
         const booking = bookingDoc.data();
-        const profileDoc = await db.collection('foodTrucks').doc(booking.profile_id.toString()).get();
+        // ✨ KROK 5: Używamy nowej funkcji do znalezienia profilu
+        const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
+        if (!profileDoc || !profileDoc.exists) {
+            return res.status(404).json({ message: "Nie znaleziono profilu food trucka powiązanego z rezerwacją." });
+        }
         
         const organizer_id = booking.user_id;
         const owner_id = profileDoc.data().owner_id;
@@ -115,7 +123,6 @@ exports.initiateBookingConversation = async (req, res) => {
             return res.status(403).json({ message: "Brak uprawnień."});
         }
         
-        // ✨ POPRAWKA: Szukamy po requestId, które jest stringiem
         const existingConvSnap = await db.collection('conversations').where('request_id', '==', requestId).limit(1).get();
         if (!existingConvSnap.empty) {
             const existingConv = existingConvSnap.docs[0];
@@ -124,10 +131,8 @@ exports.initiateBookingConversation = async (req, res) => {
         
         const title = `Rezerwacja #${requestId}`;
         const newConvData = {
-            // ✨ POPRAWKA: Gwarantujemy, że participant_ids jest tablicą (array)
             participant_ids: [organizer_id, owner_id].sort(),
             title,
-            // ✨ POPRAWKA: Przechowujemy requestId jako string
             request_id: requestId, 
             created_at: FieldValue.serverTimestamp(),
             last_message_at: FieldValue.serverTimestamp()
@@ -142,6 +147,7 @@ exports.initiateBookingConversation = async (req, res) => {
     }
 };
 
+// Ta funkcja była już poprawna i nie wymagała zmian.
 exports.getMessages = async (req, res) => {
     try {
         const { id } = req.params;

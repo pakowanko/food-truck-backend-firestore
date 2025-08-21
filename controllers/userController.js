@@ -1,24 +1,32 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' (Firestore).
+// plik: /controllers/userController.js
+
 const db = require('../firestore');
 const bcrypt = require('bcryptjs');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+// ✨ KROK 1: Importujemy naszą uniwersalną funkcję
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 // Aktualizacja danych profilowych (imię, nazwisko, firma itp.)
 exports.updateMyProfile = async (req, res) => {
-    const { userId } = req.user;
+    const { userId } = req.user; // To jest numeryczne ID
     const updateData = req.body;
 
     try {
-        // ZMIENIONE: Krok 1 - Aktualizacja dokumentu w Firestore
-        const userRef = db.collection('users').doc(userId.toString());
+        // ✨ KROK 2: Używamy nowej funkcji do znalezienia dokumentu użytkownika
+        const userDoc = await getDocByNumericId('users', 'user_id', userId);
+        if (!userDoc || !userDoc.exists) {
+            return res.status(404).json({ message: 'Nie znaleziono użytkownika.' });
+        }
+        
+        // Od teraz pracujemy na referencji do znalezionego dokumentu
+        const userRef = userDoc.ref;
         await userRef.update(updateData);
         
         const updatedUserDoc = await userRef.get();
         const updatedUser = updatedUserDoc.data();
 
-        // Krok 2: Logika Stripe pozostaje bez zmian, pobiera dane z `updatedUser`
+        // Logika Stripe pozostaje bez zmian
         if (updatedUser.stripe_customer_id) {
-            console.log(`Synchronizowanie danych dla klienta Stripe ID: ${updatedUser.stripe_customer_id}`);
             try {
                 await stripe.customers.update(updatedUser.stripe_customer_id, {
                     name: updatedUser.company_name,
@@ -31,15 +39,14 @@ exports.updateMyProfile = async (req, res) => {
                     },
                     tax_id_data: updatedUser.nip ? [{ type: 'eu_vat', value: updatedUser.nip }] : [],
                 });
-                console.log(`✅ Pomyślnie zaktualizowano dane klienta w Stripe.`);
             } catch (stripeError) {
                 console.error(`❌ Błąd podczas aktualizacji klienta w Stripe:`, stripeError.message);
             }
         }
 
-        // Usuwamy wrażliwe dane przed odesłaniem do klienta
         delete updatedUser.password_hash;
-        res.json({ user_id: updatedUserDoc.id, ...updatedUser });
+        // ✨ Poprawka dla spójności: zwracamy doc_id i user_id
+        res.json({ doc_id: updatedUserDoc.id, ...updatedUser });
 
     } catch (error) {
         console.error("Błąd aktualizacji profilu użytkownika:", error);
@@ -49,15 +56,14 @@ exports.updateMyProfile = async (req, res) => {
 
 // Aktualizacja hasła
 exports.updateMyPassword = async (req, res) => {
-    const { userId } = req.user;
+    const { userId } = req.user; // To jest numeryczne ID
     const { currentPassword, newPassword } = req.body;
 
     try {
-        // ZMIENIONE: Pobranie użytkownika i aktualizacja hasła w Firestore
-        const userRef = db.collection('users').doc(userId.toString());
-        const userDoc = await userRef.get();
+        // ✨ KROK 3: Tutaj również używamy nowej funkcji
+        const userDoc = await getDocByNumericId('users', 'user_id', userId);
 
-        if (!userDoc.exists) {
+        if (!userDoc || !userDoc.exists) {
             return res.status(404).json({ message: 'Nie znaleziono użytkownika.' });
         }
         
@@ -69,7 +75,8 @@ exports.updateMyPassword = async (req, res) => {
         }
 
         const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-        await userRef.update({ password_hash: hashedNewPassword });
+        // Aktualizujemy dokument używając jego referencji
+        await userDoc.ref.update({ password_hash: hashedNewPassword });
 
         res.json({ message: 'Hasło zostało pomyślnie zmienione.' });
     } catch (error) {

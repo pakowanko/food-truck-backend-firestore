@@ -1,8 +1,11 @@
+// plik: /controllers/adminController.js
+
 const db = require('../firestore');
 const { GeoPoint } = require('firebase-admin/firestore'); 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { Storage } = require('@google-cloud/storage');
 const axios = require('axios');
+const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 const storage = new Storage();
 const bucketName = process.env.GCS_BUCKET_NAME;
@@ -78,11 +81,9 @@ exports.getDashboardStats = async (req, res) => {
 exports.getAllUsers = async (req, res) => {
     try {
         const usersSnap = await db.collection('users').orderBy('user_id').get();
-        // Zwracamy ID dokumentu jako `doc_id`, a numeryczne `user_id` pozostaje nienaruszone.
         const users = usersSnap.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
 
         const usersWithProfileCount = await Promise.all(users.map(async user => {
-            // Używamy numerycznego user.user_id, a nie doc.id
             const profilesSnap = await db.collection('foodTrucks').where('owner_id', '==', user.user_id).get();
             return { ...user, profile_count: profilesSnap.size };
         }));
@@ -117,7 +118,7 @@ exports.updateProfileDetails = async (req, res) => {
         if (!updatedDoc.exists) {
             return res.status(404).json({ message: 'Nie znaleziono profilu.' });
         }
-        res.json({ profile_id: updatedDoc.id, ...updatedDoc.data() });
+        res.json({ doc_id: updatedDoc.id, ...updatedDoc.data() });
     } catch (error) {
         console.error("Błąd aktualizacji profilu przez admina:", error);
         res.status(500).json({ message: "Błąd serwera." });
@@ -136,15 +137,15 @@ exports.getAllBookings = async (req, res) => {
             let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych' };
 
             if (booking.profile_id) {
-                const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-                if (!profileQuery.empty) {
-                    const profileData = profileQuery.docs[0].data();
+                const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
+                if (profileDoc && profileDoc.exists) {
+                    const profileData = profileDoc.data();
                     profileInfo.food_truck_name = profileData.food_truck_name || 'Brak nazwy';
                     
                     if (profileData.owner_id) {
-                        const ownerQuery = await db.collection('users').where('user_id', '==', profileData.owner_id).limit(1).get();
-                        if (!ownerQuery.empty) {
-                            const ownerData = ownerQuery.docs[0].data();
+                        const ownerDoc = await getDocByNumericId('users', 'user_id', profileData.owner_id);
+                        if (ownerDoc && ownerDoc.exists) {
+                            const ownerData = ownerDoc.data();
                             ownerInfo.owner_email = ownerData.email;
                             ownerInfo.company_name = ownerData.company_name;
                         }
@@ -153,9 +154,9 @@ exports.getAllBookings = async (req, res) => {
             }
 
             if (booking.user_id) {
-                const organizerQuery = await db.collection('users').where('user_id', '==', booking.user_id).limit(1).get();
-                if (!organizerQuery.empty) {
-                    const orgData = organizerQuery.docs[0].data();
+                const organizerDoc = await getDocByNumericId('users', 'user_id', booking.user_id);
+                if (organizerDoc && organizerDoc.exists) {
+                    const orgData = organizerDoc.data();
                     organizerInfo.organizer_first_name = orgData.first_name;
                     organizerInfo.organizer_last_name = orgData.last_name;
                     organizerInfo.organizer_email = orgData.email;
@@ -174,7 +175,7 @@ exports.getAllBookings = async (req, res) => {
 
 
 exports.toggleUserBlock = async (req, res) => {
-    const { userId } = req.params; // userId to ID dokumentu (string)
+    const { userId } = req.params;
     try {
         const userRef = db.collection('users').doc(userId);
         const userDoc = await userRef.get();
@@ -191,7 +192,7 @@ exports.toggleUserBlock = async (req, res) => {
 };
 
 exports.updateUser = async (req, res) => {
-    const { userId } = req.params; // userId to ID dokumentu (string)
+    const { userId } = req.params;
     const updateData = req.body;
     try {
         const userRef = db.collection('users').doc(userId);
@@ -209,7 +210,7 @@ exports.updateUser = async (req, res) => {
 };
 
 exports.deleteUser = async (req, res) => {
-    const { userId } = req.params; // userId to ID dokumentu (string)
+    const { userId } = req.params;
     
     const userDoc = await db.collection('users').doc(userId).get();
     if (!userDoc.exists) return res.status(404).json({ message: 'Użytkownik nie istnieje.' });
@@ -285,22 +286,19 @@ exports.getAllConversations = async (req, res) => {
             const participantDetails = [];
 
             if (Array.isArray(conversationData.participant_ids)) {
-                const participantPromises = conversationData.participant_ids.map(async (id) => {
+                for (const id of conversationData.participant_ids) {
                     if (id) { 
-                        const userSnap = await db.collection('users').where('user_id', '==', id).limit(1).get();
-                        if (!userSnap.empty) {
-                            const userData = userSnap.docs[0].data();
-                            return {
+                        const userDoc = await getDocByNumericId('users', 'user_id', id);
+                        if (userDoc && userDoc.exists) {
+                            const userData = userDoc.data();
+                            participantDetails.push({
                                 user_id: userData.user_id,
-                                email: userData.email, // Dodajemy email
+                                email: userData.email,
                                 name: userData.company_name || `${userData.first_name} ${userData.last_name}`
-                            };
+                            });
                         }
                     }
-                    return null;
-                });
-                const results = await Promise.all(participantPromises);
-                participantDetails.push(...results.filter(p => p !== null));
+                }
             }
             return {
                 conversation_id: doc.id,
@@ -321,10 +319,10 @@ exports.getConversationMessages = async (req, res) => {
         const messagesSnap = await db.collection('conversations').doc(conversationId).collection('messages').orderBy('created_at', 'asc').get();
         const messages = await Promise.all(messagesSnap.docs.map(async (doc) => {
             const message = { message_id: doc.id, ...doc.data() };
-            const senderSnap = await db.collection('users').where('user_id', '==', message.sender_id).limit(1).get();
+            const senderDoc = await getDocByNumericId('users', 'user_id', message.sender_id);
             return {
                 ...message,
-                sender_email: !senderSnap.empty ? senderSnap.docs[0].data().email : 'Nieznany',
+                sender_email: (senderDoc && senderDoc.exists) ? senderDoc.data().email : 'Nieznany',
             }
         }));
         res.status(200).json(messages);
@@ -335,14 +333,14 @@ exports.getConversationMessages = async (req, res) => {
 };
 
 exports.getUserProfiles = async (req, res) => {
-    const { userId } = req.params; // userId to ID dokumentu (string)
+    const { userId } = req.params;
     const userDoc = await db.collection('users').doc(userId).get();
     if (!userDoc.exists) return res.status(404).json({ message: 'Użytkownik nie istnieje.' });
     const numericUserId = userDoc.data().user_id;
 
     try {
         const profilesSnap = await db.collection('foodTrucks').where('owner_id', '==', numericUserId).get();
-        const profiles = profilesSnap.docs.map(doc => ({ profile_id: doc.id, ...doc.data() }));
+        const profiles = profilesSnap.docs.map(doc => ({ doc_id: doc.id, ...doc.data() }));
         res.json(profiles);
     } catch (error) {
         console.error("Błąd pobierania profili użytkownika (admin):", error);
@@ -355,7 +353,7 @@ exports.getProfileForAdmin = async (req, res) => {
     try {
         const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
         if (!profileDoc.exists) { return res.status(404).json({ message: 'Nie znaleziono profilu.' }); }
-        res.json({ profile_id: profileDoc.id, ...profileDoc.data() });
+        res.json({ doc_id: profileDoc.id, ...profileDoc.data() });
     } catch (error) {
         console.error(`Błąd podczas pobierania profilu o ID ${profileId}:`, error);
         res.status(500).json({ message: "Błąd serwera." });
@@ -481,14 +479,14 @@ exports.getBookingById = async (req, res) => {
         let organizerInfo = { organizer_first_name: 'Brak', organizer_last_name: 'danych', organizer_email: 'Brak danych', organizer_phone: 'Brak danych' };
 
         if (booking.profile_id) {
-            const profileQuery = await db.collection('foodTrucks').where('profile_id', '==', booking.profile_id).limit(1).get();
-            if (!profileQuery.empty) {
-                const profileData = profileQuery.docs[0].data();
+            const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
+            if (profileDoc && profileDoc.exists) {
+                const profileData = profileDoc.data();
                 profileInfo.food_truck_name = profileData.food_truck_name;
                 if (profileData.owner_id) {
-                    const ownerQuery = await db.collection('users').where('user_id', '==', profileData.owner_id).limit(1).get();
-                    if (!ownerQuery.empty) {
-                        const ownerData = ownerQuery.docs[0].data();
+                    const ownerDoc = await getDocByNumericId('users', 'user_id', profileData.owner_id);
+                    if (ownerDoc && ownerDoc.exists) {
+                        const ownerData = ownerDoc.data();
                         ownerInfo.owner_email = ownerData.email;
                         ownerInfo.owner_phone = ownerData.phone_number;
                     }
@@ -496,9 +494,9 @@ exports.getBookingById = async (req, res) => {
             }
         }
         if (booking.user_id) {
-            const organizerQuery = await db.collection('users').where('user_id', '==', booking.user_id).limit(1).get();
-            if (!organizerQuery.empty) {
-                const orgData = organizerQuery.docs[0].data();
+            const organizerDoc = await getDocByNumericId('users', 'user_id', booking.user_id);
+            if (organizerDoc && organizerDoc.exists) {
+                const orgData = organizerDoc.data();
                 organizerInfo.organizer_first_name = orgData.first_name;
                 organizerInfo.organizer_last_name = orgData.last_name;
                 organizerInfo.organizer_email = orgData.email;
@@ -513,7 +511,6 @@ exports.getBookingById = async (req, res) => {
     }
 };
 
-// Wklej to na końcu pliku adminController.js
 exports.listAllUsersForDiagnosis = async (req, res) => {
     try {
         console.log('[DIAGNOSTYKA] Uruchomiono pobieranie wszystkich użytkowników...');
