@@ -1,5 +1,7 @@
+// plik: /controllers/authController.js
+
 const db = require('../firestore');
-const { FieldValue } = require('firebase-admin/firestore');
+const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
@@ -49,7 +51,6 @@ exports.register = async (req, res) => {
             return res.status(409).json({ message: 'Użytkownik o tym adresie email już istnieje.' });
         }
 
-        // ... (logika stripe bez zmian) ...
         let stripeCustomerId = null;
         if (user_type === 'food_truck_owner' && process.env.STRIPE_SECRET_KEY) {
             const customer = await stripe.customers.create({
@@ -61,7 +62,6 @@ exports.register = async (req, res) => {
             });
             stripeCustomerId = customer.id;
         }
-
 
         const hashedPassword = await bcrypt.hash(password, 10);
         const verificationToken = crypto.randomBytes(32).toString('hex');
@@ -91,11 +91,10 @@ exports.register = async (req, res) => {
         };
 
         // =================================================================
-        // ✨ TUTAJ JEST KLUCZOWA ZMIANA DIAGNOSTYCZNA ✨
-        // Zastąp starą linię 'await newUserRef.set(newUserData);' tym blokiem:
+        // ✨ BLOK DIAGNOSTYCZNY ✨
         try {
-            // Pobieramy ID projektu bezpośrednio z aktywnego połączenia z bazą
-            const projectId = db.app.options.projectId;
+            // Poprawny sposób na odczytanie ID projektu z obiektu bazy danych
+            const projectId = (db.toJSON()).projectId;
             console.log(`[DIAGNOSTYKA] Próba zapisu do projektu o ID: >>> ${projectId} <<<`);
             
             const writeResult = await newUserRef.set(newUserData);
@@ -104,7 +103,6 @@ exports.register = async (req, res) => {
             console.log(`[DIAGNOSTYKA] Czas zapisu:`, writeResult.writeTime.toDate());
         } catch (dbError) {
             console.error(`[DIAGNOSTYKA] KRYTYCZNY BŁĄD ZAPISU DO BAZY:`, dbError);
-            // Rzuć błąd dalej, aby główny catch go złapał i zatrzymał wysyłkę maila
             throw dbError;
         }
         // =================================================================
@@ -259,8 +257,6 @@ exports.getProfile = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera.' });
     }
 };
-
-// ... reszta funkcji (requestPasswordReset, resetPassword, etc.) bez zmian ...
 
 exports.requestPasswordReset = async (req, res) => {
     const { email } = req.body;
