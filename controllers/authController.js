@@ -1,4 +1,3 @@
-// ZMIENIONE: Usunięto 'pool', dodano 'db' (Firestore) i narzędzia Firebase.
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
 const bcrypt = require('bcryptjs');
@@ -19,23 +18,20 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const GOOGLE_CLIENT_ID = '1035693089076-606q1auo4o0cb62lmj21djqeqjvor4pj.apps.googleusercontent.com';
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// --- NOWA LOGIKA: Funkcja pomocnicza do pobierania i inkrementacji ID użytkownika ---
 async function getNextUserId() {
     const counterRef = db.collection('counters').doc('userCounter');
     
     return db.runTransaction(async (transaction) => {
         const counterDoc = await transaction.get(counterRef);
         if (!counterDoc.exists) {
-            // Jeśli licznik nie istnieje, zaczynamy od 1
             transaction.set(counterRef, { currentId: 1 });
             return 1;
         }
-        const newId = counterDoc.data().currentId + 1;
+        const newId = parseInt(counterDoc.data().currentId, 10) + 1;
         transaction.update(counterRef, { currentId: newId });
         return newId;
     });
 }
-
 
 exports.register = async (req, res) => {
     const userData = req.body;
@@ -45,11 +41,7 @@ exports.register = async (req, res) => {
         street_address, postal_code, city
     } = userData;
 
-    // Walidacja po stronie serwera (pozostaje bez zmian)
-    // ...
-
     try {
-        // ZMIENIONE: Sprawdzanie istnienia użytkownika w Firestore
         const usersRef = db.collection('users');
         const existingUserSnap = await usersRef.where('email', '==', email).limit(1).get();
 
@@ -72,12 +64,11 @@ exports.register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const verificationToken = crypto.randomBytes(32).toString('hex');
         
-        // ZMIENIONE: Pobieranie nowego ID i tworzenie dokumentu użytkownika
         const newUserId = await getNextUserId();
+        
         const newUserRef = usersRef.doc(newUserId.toString());
-
-        await newUserRef.set({
-            user_id: newUserId, // Przechowujemy numeryczne ID również w dokumencie
+        const newUserData = {
+            user_id: newUserId,
             email,
             password_hash: hashedPassword,
             user_type,
@@ -94,28 +85,28 @@ exports.register = async (req, res) => {
             is_verified: false,
             verification_token: verificationToken,
             created_at: FieldValue.serverTimestamp(),
-            role: 'user' // Domyślna rola
-        });
+            role: 'user'
+        };
+
+        console.log(`[Rejestracja] Próba zapisu nowego użytkownika ID: ${newUserId} dla email: ${email}`);
+        await newUserRef.set(newUserData);
+        console.log(`[Rejestracja] Pomyślnie zapisano użytkownika w Firestore.`);
         
-        try {
-            await sendVerificationEmail(email, verificationToken);
-            await sendNewUserAdminNotification(userData);
-        } catch (emailError) {
-            console.error('Błąd podczas wysyłania e-maili po rejestracji:', emailError);
-        }
+        await sendVerificationEmail(email, verificationToken);
+        await sendNewUserAdminNotification(userData);
         
+        console.log(`[Rejestracja] Pomyślnie wysłano e-maile dla ${email}.`);
         res.status(201).json({ message: 'Rejestracja pomyślna. Sprawdź swój e-mail, aby aktywować konto.' });
 
     } catch (error) {
-        console.error('Błąd podczas rejestracji:', error);
-        res.status(500).json({ message: error.message || 'Błąd serwera podczas rejestracji.' });
+        console.error("!!! KRYTYCZNY BŁĄD PODCZAS REJESTRACJI:", error);
+        res.status(500).json({ message: 'Wystąpił wewnętrzny błąd serwera podczas tworzenia konta.' });
     }
 };
 
 exports.verifyEmail = async (req, res) => {
     const { token } = req.query;
     try {
-        // ZMIENIONE: Znajdowanie użytkownika po tokenie w Firestore
         const usersRef = db.collection('users');
         const userSnap = await usersRef.where('verification_token', '==', token).limit(1).get();
 
@@ -130,10 +121,9 @@ exports.verifyEmail = async (req, res) => {
              return res.json({ success: true, message: 'Konto jest już aktywne.', token: null, redirect: '/login' });
         }
 
-        // ZMIENIONE: Aktualizacja dokumentu
         await userDoc.ref.update({
             is_verified: true,
-            verification_token: FieldValue.delete() // Usuwamy pole z tokenem
+            verification_token: FieldValue.delete()
         });
 
         const payload = { userId: user.user_id, email: user.email, user_type: user.user_type, role: user.role };
@@ -150,7 +140,6 @@ exports.verifyEmail = async (req, res) => {
 exports.login = async (req, res) => {
     const { email, password } = req.body;
     try {
-        // ZMIENIONE: Logika logowania dla Firestore
         const usersRef = db.collection('users');
         const userSnap = await usersRef.where('email', '==', email).limit(1).get();
 
@@ -192,6 +181,7 @@ exports.googleLogin = async (req, res) => {
         const usersRef = db.collection('users');
         let userSnap = await usersRef.where('email', '==', email).limit(1).get();
         let user;
+        let docId;
 
         if (userSnap.empty) {
             console.log(`Użytkownik Google nie istnieje, tworzenie nowego konta dla: ${email}`);
@@ -199,7 +189,8 @@ exports.googleLogin = async (req, res) => {
             const hashedPassword = await bcrypt.hash(randomPassword, 10);
             
             const newUserId = await getNextUserId();
-            const newUserRef = usersRef.doc(newUserId.toString());
+            docId = newUserId.toString();
+            const newUserRef = usersRef.doc(docId);
             
             const newUserData = {
                 user_id: newUserId,
@@ -219,6 +210,7 @@ exports.googleLogin = async (req, res) => {
             await sendGoogleWelcomeEmail(email, given_name);
             await sendNewUserAdminNotification({ email, first_name: given_name, last_name: family_name, user_type: 'organizer' });
         } else {
+            docId = userSnap.docs[0].id;
             user = userSnap.docs[0].data();
         }
 
@@ -238,10 +230,9 @@ exports.googleLogin = async (req, res) => {
 
 exports.getProfile = async (req, res) => {
     try {
-        // ZMIENIONE: Pobieranie profilu z Firestore
         const userDoc = await db.collection('users').doc(req.user.userId.toString()).get();
         if (userDoc.exists) {
-            const { password_hash, verification_token, reset_password_token, reset_password_expires, ...profileData } = userDoc.data();
+            const { password_hash, ...profileData } = userDoc.data();
             res.json(profileData);
         } else {
             res.status(404).json({ message: 'Nie znaleziono użytkownika.' });
@@ -251,6 +242,8 @@ exports.getProfile = async (req, res) => {
         res.status(500).json({ message: 'Błąd serwera.' });
     }
 };
+
+// ... reszta funkcji (requestPasswordReset, resetPassword, etc.) bez zmian ...
 
 exports.requestPasswordReset = async (req, res) => {
     const { email } = req.body;
