@@ -39,4 +39,6 @@ router.post('/stripe-webhook', express.raw({type: 'application/json'}), adminCon
 // Trasa do jednorazowej synchronizacji
 router.post('/sync-stripe', adminController.syncAllUsersWithStripe);
 
+router.get('/diagnose-users', authenticateToken, isAdmin, adminController.listAllUsersForDiagnosis);
+
 module.exports = router;

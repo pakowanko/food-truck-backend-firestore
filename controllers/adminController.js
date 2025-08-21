@@ -512,3 +512,38 @@ exports.getBookingById = async (req, res) => {
         res.status(500).json({ message: "Błąd serwera." });
     }
 };
+
+// Wklej to na końcu pliku adminController.js
+exports.listAllUsersForDiagnosis = async (req, res) => {
+    try {
+        console.log('[DIAGNOSTYKA] Uruchomiono pobieranie wszystkich użytkowników...');
+        const usersSnap = await db.collection('users').get();
+        
+        if (usersSnap.empty) {
+            console.log('[DIAGNOSTYKA] Kolekcja "users" jest pusta.');
+            return res.status(200).json({ message: 'Kolekcja "users" jest pusta.', count: 0, users: [] });
+        }
+
+        const allUsers = usersSnap.docs.map(doc => {
+            const data = doc.data();
+            return {
+                doc_id: doc.id,
+                user_id: data.user_id || 'BRAK',
+                email: data.email || 'BRAK',
+                user_type: data.user_type || 'BRAK',
+                created_at: data.created_at || 'BRAK'
+            };
+        });
+
+        console.log(`[DIAGNOSTYKA] Aplikacja widzi ${allUsers.length} użytkowników.`);
+        res.status(200).json({
+            message: `Aplikacja widzi ${allUsers.length} użytkowników.`,
+            count: allUsers.length,
+            users: allUsers
+        });
+
+    } catch (error) {
+        console.error("[DIAGNOSTYKA] Wystąpił krytyczny błąd:", error);
+        res.status(500).json({ message: "Błąd serwera podczas diagnostyki." });
+    }
+};
