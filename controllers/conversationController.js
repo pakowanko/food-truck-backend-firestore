@@ -1,8 +1,11 @@
-// plik: /controllers/conversationController.js
+/*
+================================================
+Poprawiony plik: /controllers/conversationController.js
+================================================
+*/
 
 const db = require('../firestore');
 const { FieldValue } = require('firebase-admin/firestore');
-// ✨ KROK 1: Importujemy naszą uniwersalną funkcję
 const { getDocByNumericId } = require('../utils/firestoreUtils');
 
 exports.getMyConversations = async (req, res) => {
@@ -22,14 +25,12 @@ exports.getMyConversations = async (req, res) => {
             if (convo.request_id) {
                 const bookingSnap = await db.collection('bookings').doc(convo.request_id).get();
                 if (bookingSnap.exists) {
-                    // ✨ KROK 2: Używamy nowej funkcji do znalezienia profilu
                     const profileSnap = await getDocByNumericId('foodTrucks', 'profile_id', bookingSnap.data().profile_id);
                     if (profileSnap && profileSnap.exists) {
                         title = profileSnap.data().food_truck_name || `Rezerwacja #${convo.request_id}`;
                     }
                 }
             } else if (recipientId) {
-                // ✨ KROK 3: Używamy nowej funkcji do znalezienia odbiorcy
                 const recipientSnap = await getDocByNumericId('users', 'user_id', recipientId);
                 if (recipientSnap && recipientSnap.exists) {
                     const recipientData = recipientSnap.data();
@@ -74,7 +75,6 @@ exports.initiateUserConversation = async (req, res) => {
             return res.status(200).json({ conversation_id: existingConv.id, ...existingConv.data() });
         }
         
-        // ✨ KROK 4: Używamy nowej funkcji do znalezienia odbiorcy
         const recipientDoc = await getDocByNumericId('users', 'user_id', recipientIdInt);
         if (!recipientDoc || !recipientDoc.exists) {
             return res.status(404).json({ message: "Użytkownik docelowy nie istnieje." });
@@ -110,7 +110,6 @@ exports.initiateBookingConversation = async (req, res) => {
         }
         
         const booking = bookingDoc.data();
-        // ✨ KROK 5: Używamy nowej funkcji do znalezienia profilu
         const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', booking.profile_id);
         if (!profileDoc || !profileDoc.exists) {
             return res.status(404).json({ message: "Nie znaleziono profilu food trucka powiązanego z rezerwacją." });
@@ -147,7 +146,6 @@ exports.initiateBookingConversation = async (req, res) => {
     }
 };
 
-// Ta funkcja była już poprawna i nie wymagała zmian.
 exports.getMessages = async (req, res) => {
     try {
         const { id } = req.params;

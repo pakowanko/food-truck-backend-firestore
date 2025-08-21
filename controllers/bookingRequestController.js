@@ -1,4 +1,8 @@
-// plik: /controllers/bookingRequestController.js
+/*
+================================================
+Poprawiony plik: /controllers/bookingRequestController.js
+================================================
+*/
 
 const db = require('../firestore');
 const { FieldValue, Timestamp } = require('firebase-admin/firestore');
@@ -10,7 +14,6 @@ const { getDocByNumericId } = require('../utils/firestoreUtils');
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 exports.createBookingRequest = async (req, res) => {
-    console.log('[Controller: createBookingRequest] Uruchomiono tworzenie rezerwacji.');
     const { 
         profile_id, event_start_date, event_end_date, event_description,
         event_type, guest_count, event_location, event_time,
@@ -56,7 +59,7 @@ exports.createBookingRequest = async (req, res) => {
 
             if (ownerEmail) {
                 const title = `Nowa prośba o rezerwację dla ${foodTruckName}!`;
-                const body = `<p>Otrzymałeś nowe zapytanie o rezerwację. Zaloguj się na swoje konto w BookTheFoodTruck, aby zobaczyć szczegóły.</p>`;
+                const body = `<p>Otrzymałeś nowe zapytanie o rezerwację. Zaloguj się na swoje konto, aby zobaczyć szczegóły.</p>`;
                 const finalHtml = createBrandedEmail(title, body);
                 
                 const msg = {
@@ -134,7 +137,6 @@ exports.updateBookingStatus = async (req, res) => {
         res.status(500).json({ message: error.message || 'Błąd serwera.' });
     }
 };
-
 
 exports.cancelBooking = async (req, res) => {
     const { requestId } = req.params;
