@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const conversationController = require('../controllers/conversationController');
-// ✨ POPRAWKA: Importujemy tylko jeden, właściwy middleware
+// Importujemy tylko jeden, właściwy middleware
 const authenticateToken = require('../middleware/authenticateToken');
 
 // Pobiera wszystkie konwersacje zalogowanego użytkownika
@@ -12,7 +12,6 @@ router.get('/', authenticateToken, conversationController.getMyConversations);
 // Pobiera wiadomości z konkretnej konwersacji
 router.get('/:id/messages', authenticateToken, conversationController.getMessages);
 
-// ✨ POPRAWKA: Używamy poprawnej nazwy zmiennej 'authenticateToken'
 // Wysyła nową wiadomość do konkretnej konwersacji
 router.post('/:id/messages', authenticateToken, conversationController.postMessage);
 
