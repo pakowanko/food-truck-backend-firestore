@@ -9,6 +9,8 @@ router.get('/', authenticateToken, conversationController.getMyConversations);
 
 // Pobiera wiadomości z konkretnej konwersacji
 router.get('/:id/messages', authenticateToken, conversationController.getMessages);
+router.post('/:id/messages', authMiddleware, conversationController.postMessage);
+
 
 // Trasa do inicjowania rozmowy ogólnej
 router.post('/initiate/user', authenticateToken, conversationController.initiateUserConversation);
