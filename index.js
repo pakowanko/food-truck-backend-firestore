@@ -10,10 +10,9 @@ const path = require('path');
 const fs = require('fs');
 
 const db = require('./firestore');
-const { FieldValue } = require('firebase-admin/firestore');
-
-const sgMail = require('@sendgrid/mail');
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const { getDocByNumericId } = require('./utils/firestoreUtils');
+// ✨ ZMIANA: Importujemy nową funkcję
+const { sendNewMessageEmail } = require('./utils/emailTemplate');
 
 // Importy tras
 const authRoutes = require('./routes/authRoutes');
@@ -24,7 +23,6 @@ const gusRoutes = require('./routes/gusRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
 const cronRoutes = require('./routes/cronRoutes');
-const { createBrandedEmail } = require('./utils/emailTemplate');
 
 const app = express();
 
@@ -59,7 +57,6 @@ const io = new Server(server, {
   pingTimeout: 20000    
 });
 
-// ✨ KLUCZOWA ZMIANA: Udostępniamy instancję `io` w każdym zapytaniu
 app.use((req, res, next) => {
   req.io = io;
   next();
@@ -97,8 +94,6 @@ io.on('connection', (socket) => {
     if (userId) {
       socket.join(userId.toString());
       console.log(`Użytkownik ${socket.id} zarejestrowany w prywatnym pokoju ${userId}`);
-    } else {
-      console.warn(`Ostrzeżenie: Otrzymano próbę rejestracji z pustym userId od socketu: ${socket.id}`);
     }
   });
   
@@ -106,12 +101,39 @@ io.on('connection', (socket) => {
     if (conversationId) {
       socket.join(conversationId);
       console.log(`Użytkownik ${socket.id} dołączył do pokoju czatu ${conversationId}`);
-    } else {
-      console.warn(`Ostrzeżenie: Otrzymano próbę dołączenia do pokoju z pustym conversationId od socketu: ${socket.id}`);
     }
   });
 
-  // ✨ USUNIĘTO: Logika `socket.on('send_message', ...)` została przeniesiona do kontrolera
+  // ✨ ZMIANA: Dodajemy logikę wysyłania maila z powiadomieniem
+  socket.on('new_message_notification', async (data) => {
+    const { conversationId, senderId } = data;
+    try {
+        const conversationDoc = await db.collection('conversations').doc(conversationId).get();
+        const participantIds = conversationDoc.data()?.participant_ids;
+        if (!participantIds) return;
+
+        const recipientId = participantIds.find(id => id !== parseInt(senderId));
+        if (!recipientId) return;
+        
+        const roomSockets = await io.in(conversationId).allSockets();
+        // Wyślij maila tylko jeśli odbiorca nie jest aktywny w pokoju
+        if (roomSockets.size <= 1) { 
+            const recipientDoc = await getDocByNumericId('users', 'user_id', recipientId);
+            const senderDoc = await getDocByNumericId('users', 'user_id', senderId);
+            
+            if (recipientDoc && recipientDoc.exists && senderDoc && senderDoc.exists) {
+                const recipientEmail = recipientDoc.data().email;
+                const senderData = senderDoc.data();
+                const senderName = senderData.company_name || senderData.first_name || 'Użytkownik';
+                
+                await sendNewMessageEmail(recipientEmail, senderName, conversationId);
+                console.log(`Wysłano powiadomienie email o nowej wiadomości do ${recipientEmail}`);
+            }
+        }
+    } catch (error) {
+        console.error("Błąd podczas wysyłania powiadomienia email o wiadomości:", error);
+    }
+  });
   
   socket.on('disconnect', () => { 
       console.log('❌ Użytkownik rozłączył się:', socket.id); 

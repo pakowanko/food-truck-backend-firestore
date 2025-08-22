@@ -7,7 +7,8 @@ Poprawiony plik: /controllers/bookingRequestController.js
 const db = require('../firestore');
 const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const sgMail = require('@sendgrid/mail');
-const { createBrandedEmail } = require('../utils/emailTemplate');
+// ✨ ZMIANA: Importujemy nowe, dedykowane funkcje
+const { sendNewBookingRequestEmail, sendBookingConfirmedEmail } = require('../utils/emailTemplate');
 const { findAndSuggestAlternatives } = require('../utils/suggestionUtils');
 const { getDocByNumericId } = require('../utils/firestoreUtils');
 
@@ -27,7 +28,6 @@ exports.createBookingRequest = async (req, res) => {
         if (!userDoc) {
             return res.status(404).json({ message: 'Nie znaleziono organizatora.' });
         }
-        const organizerPhone = userDoc.data()?.phone_number || null;
 
         const newBookingData = {
             profile_id: parseInt(profile_id, 10),
@@ -36,7 +36,7 @@ exports.createBookingRequest = async (req, res) => {
             event_end_date: Timestamp.fromDate(new Date(event_end_date)),
             event_details: event_description,
             status: 'pending_owner_approval',
-            organizer_phone: organizerPhone,
+            organizer_phone: userDoc.data()?.phone_number || null,
             event_type,
             guest_count: parseInt(guest_count) || null,
             event_location,
@@ -58,17 +58,8 @@ exports.createBookingRequest = async (req, res) => {
             const foodTruckName = profileDoc.data()?.food_truck_name;
 
             if (ownerEmail) {
-                const title = `Nowa prośba o rezerwację dla ${foodTruckName}!`;
-                const body = `<p>Otrzymałeś nowe zapytanie o rezerwację. Zaloguj się na swoje konto, aby zobaczyć szczegóły.</p>`;
-                const finalHtml = createBrandedEmail(title, body);
-                
-                const msg = {
-                    to: ownerEmail,
-                    from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' },
-                    subject: title,
-                    html: finalHtml,
-                };
-                await sgMail.send(msg);
+                // ✨ ZMIANA: Używamy nowej funkcji
+                await sendNewBookingRequestEmail(ownerEmail, foodTruckName, newBookingRef.id);
             }
         }
         
@@ -111,19 +102,18 @@ exports.updateBookingStatus = async (req, res) => {
 
         if (status === 'confirmed') {
             if (organizerEmail) {
+                // Mail do organizatora (można by też go przenieść do szablonu)
+                const { createBrandedEmail } = require('../utils/emailTemplate');
                 const title = `Twoja rezerwacja dla ${foodTruckName} została POTWIERDZONA!`;
                 const body = `<p>Dobra wiadomość! Twoja rezerwacja food trucka <strong>${foodTruckName}</strong> na wydarzenie w dniu ${bookingRequest.event_start_date.toDate().toLocaleDateString()} została potwierdzona przez właściciela.</p>`;
-                const finalHtml = createBrandedEmail(title, body);
-                const msg = { to: organizerEmail, from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
+                const finalHtml = createBrandedEmail(title, body, { text: 'Zobacz rezerwację', url: `${APP_URL}/dashboard` });
+                const msg = { to: organizerEmail, from: { email: SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
                 await sgMail.send(msg);
             }
 
             if (ownerEmail) {
-                const title = `Potwierdziłeś rezerwację #${requestId}!`;
-                const body = `<p>Dziękujemy za potwierdzenie rezerwacji.</p><p><strong>Pamiętaj, że zgodnie z regulaminem, jesteś zobowiązany do zakupu opakowań na to wydarzenie w naszym sklepie: <a href="https://www.pakowanko.com">www.pakowanko.com</a>.</strong></p>`;
-                const finalHtml = createBrandedEmail(title, body);
-                const msg = { to: ownerEmail, from: { email: process.env.SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
-                await sgMail.send(msg);
+                // ✨ ZMIANA: Używamy nowej funkcji
+                await sendBookingConfirmedEmail(ownerEmail, requestId);
             }
         
         } else if (status === 'rejected_by_owner') {
