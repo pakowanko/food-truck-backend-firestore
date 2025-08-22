@@ -6,6 +6,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const APP_URL = 'https://app.bookthefoodtruck.eu';
 const PAKOWANKO_URL = 'https://www.pakowanko.com';
 const SENDER_EMAIL = process.env.SENDER_EMAIL || 'info@bookthefoodtruck.eu';
+const LOGO_URL = 'https://storage.googleapis.com/foodtruck_storage/Logo%20BookTheFoodTruck.jpeg';
 
 const createBrandedEmail = (title, body, button = null) => {
   let buttonHtml = '';
@@ -41,7 +42,8 @@ const createBrandedEmail = (title, body, button = null) => {
             <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="border-collapse: collapse; background-color: #ffffff; border: 1px solid #dddddd;">
               <tr>
                 <td align="center" style="padding: 40px 0 30px 0; background-color: #333333;">
-                  <img src="https://app.bookthefoodtruck.eu/logo.png" alt="Book The Food Truck Logo" width="200" style="display: block;" />
+                  {/* ✨ POPRAWKA: Używamy zmiennej LOGO_URL */}
+                  <img src="${LOGO_URL}" alt="Book The Food Truck Logo" width="200" style="display: block;" />
                 </td>
               </tr>
               <tr>
