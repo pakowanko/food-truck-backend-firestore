@@ -59,7 +59,7 @@ exports.createBookingRequest = async (req, res) => {
 
             if (ownerEmail) {
                 // ✨ ZMIANA: Używamy nowej funkcji
-                await sendNewBookingRequestEmail(ownerEmail, foodTruckName, newBookingRef.id);
+                await sendNewBookingRequestEmail(ownerId, ownerEmail, foodTruckName);
             }
         }
         
@@ -113,7 +113,7 @@ exports.updateBookingStatus = async (req, res) => {
 
             if (ownerEmail) {
                 // ✨ ZMIANA: Używamy nowej funkcji
-                await sendBookingConfirmedEmail(ownerEmail, requestId);
+                await sendBookingConfirmedEmail(ownerId, ownerEmail, requestId);
             }
         
         } else if (status === 'rejected_by_owner') {

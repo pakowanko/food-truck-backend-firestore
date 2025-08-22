@@ -8,6 +8,14 @@ const PAKOWANKO_URL = 'https://www.pakowanko.com';
 const SENDER_EMAIL = process.env.SENDER_EMAIL || 'info@bookthefoodtruck.eu';
 const LOGO_URL = 'https://storage.googleapis.com/foodtruck_storage/Logo%20BookTheFoodTruck.jpeg';
 
+// Funkcja pomocnicza do tworzenia "magicznego linku"
+const createMagicLink = (userId, redirectPath) => {
+    // Tworzymy krótki token logowania, ważny np. 7 dni
+    const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    // Zwracamy pełny URL z tokenem i ścieżką przekierowania
+    return `${APP_URL}/login-with-token?token=${token}&redirect=${encodeURIComponent(redirectPath)}`;
+};
+
 const createBrandedEmail = (title, body, button = null) => {
   let buttonHtml = '';
   if (button && button.url && button.text) {
@@ -110,25 +118,31 @@ exports.sendSuggestionEmail = async (organizerEmail, originalFoodTruckName, sugg
 };
 
 
-exports.sendNewMessageEmail = async (recipientEmail, senderName, conversationId) => {
+exports.sendNewMessageEmail = async (recipientId, recipientEmail, senderName, conversationId) => {
     const title = `Masz nową wiadomość od ${senderName}`;
     const body = `<p>Cześć,</p><p><strong>${senderName}</strong> napisał do Ciebie na czacie.</p><p>Kliknij przycisk poniżej, aby odczytać wiadomość i kontynuować rozmowę.</p>`;
-    const button = { text: 'Zobacz wiadomość', url: `${APP_URL}/chat/${conversationId}` };
+    const button = {
+        text: 'Zobacz wiadomość',
+        url: createMagicLink(recipientId, `/chat/${conversationId}`)
+    };
     const finalHtml = createBrandedEmail(title, body, button);
     const msg = { to: recipientEmail, from: { email: SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
     await sgMail.send(msg);
 };
 
-exports.sendNewBookingRequestEmail = async (ownerEmail, foodTruckName) => {
+exports.sendNewBookingRequestEmail = async (ownerId, ownerEmail, foodTruckName) => {
     const title = `Nowa prośba o rezerwację dla ${foodTruckName}!`;
     const body = `<p>Gratulacje!</p><p>Otrzymałeś nowe zapytanie o rezerwację. Przejdź do swojego panelu, aby zobaczyć szczegóły i odpowiedzieć organizatorowi.</p>`;
-    const button = { text: 'Zobacz rezerwację', url: `${APP_URL}/dashboard` };
+    const button = {
+        text: 'Zobacz rezerwację',
+        url: createMagicLink(ownerId, '/dashboard')
+    };
     const finalHtml = createBrandedEmail(title, body, button);
     const msg = { to: ownerEmail, from: { email: SENDER_EMAIL, name: 'BookTheFoodTruck' }, subject: title, html: finalHtml };
     await sgMail.send(msg);
 };
 
-exports.sendBookingConfirmedEmail = async (ownerEmail, bookingId) => {
+exports.sendBookingConfirmedEmail = async (ownerId, ownerEmail, bookingId) => {
     const title = `Potwierdziłeś rezerwację #${bookingId}!`;
     const body = `
       <p>Dziękujemy za potwierdzenie rezerwacji. Wszystkie szczegóły znajdziesz w swoim panelu.</p>

@@ -125,9 +125,11 @@ io.on('connection', (socket) => {
                 const recipientEmail = recipientDoc.data().email;
                 const senderData = senderDoc.data();
                 const senderName = senderData.company_name || senderData.first_name || 'Użytkownik';
-                
-                await sendNewMessageEmail(recipientEmail, senderName, conversationId);
+
+                     // ✨ ZMIANA: Przekazujemy ID odbiorcy do funkcji mailowej
+                await sendNewMessageEmail(recipientId, recipientEmail, senderName, conversationId);
                 console.log(`Wysłano powiadomienie email o nowej wiadomości do ${recipientEmail}`);
+              
             }
         }
     } catch (error) {
