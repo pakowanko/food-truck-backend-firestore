@@ -50,7 +50,6 @@ const createBrandedEmail = (title, body, button = null) => {
             <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="border-collapse: collapse; background-color: #ffffff; border: 1px solid #dddddd;">
               <tr>
                 <td align="center" style="padding: 40px 0 30px 0; background-color: #333333;">
-                  {/* ✨ POPRAWKA: Używamy zmiennej LOGO_URL */}
                   <img src="${LOGO_URL}" alt="Book The Food Truck Logo" width="200" style="display: block;" />
                 </td>
               </tr>
