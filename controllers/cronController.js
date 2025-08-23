@@ -215,3 +215,4 @@ exports.sendPendingBookingReminders = async (req, res) => {
         res.status(500).send('Błąd serwera podczas wykonywania zadania cron.');
     }
 };
+
