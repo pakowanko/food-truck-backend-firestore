@@ -195,14 +195,54 @@ exports.sendGoogleWelcomeEmail = async (email, firstName) => {
 
 exports.sendNewUserAdminNotification = async (userData) => {
     const adminEmail = process.env.ADMIN_EMAIL || 'pakowanko.info@gmail.com';
-    const { email, first_name, last_name, user_type, company_name } = userData;
+    
+    // Pobieramy WSZYSTKIE potrzebne dane z obiektu userData
+    const { 
+        email, 
+        user_type, 
+        first_name, 
+        last_name, 
+        company_name, 
+        nip, 
+        phone_number, 
+        street_address, 
+        postal_code, 
+        city 
+    } = userData;
+
+    // Składamy pełny adres w jedną linię
+    const fullAddress = [street_address, postal_code, city].filter(Boolean).join(', ');
+
+    // Tworzymy treść maila, która jest czytelna dla skryptu CRM
+    // Używamy prostego formatu "Etykieta: Wartość"
+    const emailBody = `
+        <h2>Nowy użytkownik!</h2>
+        <p>W systemie zarejestrował się nowy użytkownik. Oto jego dane:</p>
+        <ul>
+            <li><strong>Email:</strong> ${email || 'Brak'}</li>
+            <li><strong>Typ konta:</strong> ${user_type || 'Brak'}</li>
+            <li><strong>Imię:</strong> ${first_name || 'Brak'}</li>
+            <li><strong>Nazwisko:</strong> ${last_name || 'Brak'}</li>
+            <li><strong>Nazwa firmy:</strong> ${company_name || 'Brak'}</li>
+            <li><strong>NIP:</strong> ${nip || 'Brak'}</li>
+            <li><strong>Telefon:</strong> ${phone_number || 'Brak'}</li>
+            <li><strong>Adres:</strong> ${fullAddress || 'Brak'}</li>
+        </ul>
+    `;
+
     const msg = {
         to: adminEmail,
         from: { email: SENDER_EMAIL, name: 'System BookTheFoodTruck' },
-        subject: `Nowa rejestracja: ${email}`,
-        html: `<h2>Nowy użytkownik!</h2><p><strong>Email:</strong> ${email}</p><p><strong>Typ konta:</strong> ${user_type}</p><p><strong>Imię:</strong> ${first_name}</p><p><strong>Nazwisko:</strong> ${last_name}</p><p><strong>Firma:</strong> ${company_name || 'Brak'}</p>`
+        subject: `Nowa rejestracja w BookTheFoodTruck: ${email}`, // Zmieniamy temat na bardziej uniwersalny
+        html: emailBody
     };
-    await sgMail.send(msg);
+
+    try {
+        await sgMail.send(msg);
+        console.log(`[EMAIL] Powiadomienie o nowym użytkowniku (${email}) wysłane do admina.`);
+    } catch (error) {
+        console.error(`[EMAIL] Błąd podczas wysyłania powiadomienia do admina:`, error);
+    }
 };
 
 exports.sendPackagingReminderEmail = async (email, foodTruckName) => {
