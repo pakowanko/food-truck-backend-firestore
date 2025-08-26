@@ -21,16 +21,44 @@ exports.createBookingRequest = async (req, res) => {
         utility_costs
     } = req.body;
     
-    const organizerId = req.user.userId;
+    // ID zalogowanego użytkownika (organizatora)
+    const organizerId = req.user.userId; 
+    const numericProfileId = parseInt(profile_id, 10);
 
     try {
+        // --- POCZĄTEK ZABEZPIECZENIA PRZED DUPLIKATAMI ---
+
+        // Ustawiamy zakres dat na cały dzień startowy wydarzenia
+        const startOfDay = new Date(event_start_date);
+        startOfDay.setUTCHours(0, 0, 0, 0); // Używamy UTC dla spójności
+        const endOfDay = new Date(event_start_date);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        const existingBookingQuery = db.collection('bookings')
+            .where('user_id', '==', organizerId)
+            .where('profile_id', '==', numericProfileId)
+            .where('event_start_date', '>=', Timestamp.fromDate(startOfDay))
+            .where('event_start_date', '<=', Timestamp.fromDate(endOfDay))
+            // Sprawdzamy tylko rezerwacje, które nie są anulowane lub odrzucone
+            .where('status', 'in', ['pending_owner_approval', 'confirmed'])
+            .limit(1);
+
+        const snapshot = await existingBookingQuery.get();
+
+        // Jeśli znaleziono już aktywną rezerwację, zwracamy błąd
+        if (!snapshot.empty) {
+            return res.status(409).json({ message: 'Już posiadasz aktywną rezerwację dla tego food trucka w wybranym terminie.' });
+        }
+        
+        // --- KONIEC ZABEZPIECZENIA ---
+
         const userDoc = await getDocByNumericId('users', 'user_id', organizerId);
         if (!userDoc) {
             return res.status(404).json({ message: 'Nie znaleziono organizatora.' });
         }
 
         const newBookingData = {
-            profile_id: parseInt(profile_id, 10),
+            profile_id: numericProfileId,
             user_id: organizerId,
             event_start_date: Timestamp.fromDate(new Date(event_start_date)),
             event_end_date: Timestamp.fromDate(new Date(event_end_date)),
@@ -50,7 +78,7 @@ exports.createBookingRequest = async (req, res) => {
 
         const newBookingRef = await db.collection('bookings').add(newBookingData);
         
-        const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', parseInt(profile_id, 10));
+        const profileDoc = await getDocByNumericId('foodTrucks', 'profile_id', numericProfileId);
         if (profileDoc && profileDoc.exists) {
             const ownerId = profileDoc.data().owner_id;
             const ownerDoc = await getDocByNumericId('users', 'user_id', ownerId);
@@ -58,7 +86,6 @@ exports.createBookingRequest = async (req, res) => {
             const foodTruckName = profileDoc.data()?.food_truck_name;
 
             if (ownerEmail) {
-                // ✨ ZMIANA: Używamy nowej funkcji
                 await sendNewBookingRequestEmail(ownerId, ownerEmail, foodTruckName);
             }
         }
