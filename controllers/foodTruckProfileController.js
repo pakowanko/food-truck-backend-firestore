@@ -97,57 +97,49 @@ exports.getAllProfiles = async (req, res) => {
                 .sort((a, b) => a.distance - b.distance);
         }
 
-        // ✨ NOWA, ULEPSZONA LOGIKA FILTROWANIA PO DACIE ✨
         if (event_start_date && event_end_date) {
             const eventStart = new Date(event_start_date);
             const eventEnd = new Date(event_end_date);
+
+            const unavailableProfileIds = new Set();
             
-            // 1. Filtrujemy po rezerwacjach z Twojego systemu
+            // 1. Sprawdź potwierdzone rezerwacje
             const bookingsSnap = await db.collection('bookings')
                 .where('status', '==', 'confirmed')
                 .where('event_start_date', '<=', eventEnd)
                 .get();
 
-            const unavailableByBooking = new Set();
             bookingsSnap.forEach(doc => {
                 const booking = doc.data();
                 const bookingStart = booking.event_start_date.toDate();
                 if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
-                    unavailableByBooking.add(booking.profile_id);
+                    unavailableProfileIds.add(booking.profile_id);
                 }
             });
 
-            // 2. Sprawdzamy niedostępność zaznaczoną w nowym kalendarzu
-            const availableProfiles = [];
-            for (const profile of profiles) {
-                let isAvailable = true;
-                
-                // Sprawdź, czy nie jest zajęty przez rezerwację w systemie
-                if (unavailableByBooking.has(profile.profile_id)) {
-                    isAvailable = false;
-                } else {
-                    // Sprawdź niedostępność w kalendarzu manualnym
-                    const availabilityRef = db.collection('foodTrucks').doc(profile.doc_id).collection('availability');
-                    const datesToCheck = [];
-                    let currentDate = new Date(eventStart);
+            // 2. Sprawdź ręcznie zablokowane daty w kalendarzu
+            const profileIdsToCheck = profiles.map(p => p.doc_id);
+            if (profileIdsToCheck.length > 0) {
+                for (const docId of profileIdsToCheck) {
+                    const profileData = profiles.find(p => p.doc_id === docId);
+                    const monthYear = `${eventStart.getFullYear()}-${eventStart.getMonth() + 1}`;
+                    const availabilityDoc = await db.collection('foodTrucks').doc(docId).collection('unavailableDates').doc(monthYear).get();
                     
-                    // Firestore nie pozwala na pętlę dłuższą niż na 10 zapytań 'in', więc iterujemy
-                    while (currentDate <= eventEnd) {
-                        const dateString = currentDate.toISOString().split('T')[0];
-                        const availabilityDoc = await availabilityRef.doc(dateString).get();
-                        if (availabilityDoc.exists) {
-                            isAvailable = false;
-                            break; 
+                    if (availabilityDoc.exists) {
+                        const unavailableDays = availabilityDoc.data().days;
+                        const currentDate = new Date(eventStart);
+                        while (currentDate <= eventEnd) {
+                            if (unavailableDays.includes(currentDate.getDate())) {
+                                unavailableProfileIds.add(profileData.profile_id);
+                                break; 
+                            }
+                            currentDate.setDate(currentDate.getDate() + 1);
                         }
-                        currentDate.setDate(currentDate.getDate() + 1);
                     }
                 }
-                
-                if (isAvailable) {
-                    availableProfiles.push(profile);
-                }
             }
-            profiles = availableProfiles;
+            
+            profiles = profiles.filter(p => !unavailableProfileIds.has(p.profile_id));
         }
         res.json(profiles);
     } catch (error) {
@@ -267,7 +259,6 @@ exports.updateProfile = async (req, res) => {
     }
 };
 
-
 exports.getMyProfiles = async (req, res) => {
     const { userId } = req.user;
     if (!userId) {
@@ -303,60 +294,66 @@ exports.getProfileById = async (req, res) => {
   }
 };
 
-// --- ✨ NOWE FUNKCJE DO OBSŁUGI KALENDARZA ---
+// --- ✨ NOWE FUNKCJE KALENDARZA ---
 
 exports.getAvailability = async (req, res) => {
-    const { profileId } = req.params; // To jest doc_id
-    const { year, month } = req.query;
-
-    if (!year || !month) {
-        return res.status(400).json({ message: "Rok i miesiąc są wymagane." });
-    }
-
     try {
-        const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-        const nextMonth = parseInt(month, 10) === 12 ? 1 : parseInt(month, 10) + 1;
-        const nextYear = parseInt(month, 10) === 12 ? parseInt(year, 10) + 1 : parseInt(year, 10);
-        const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+        const { profileId } = req.params;
+        const { year, month } = req.query;
 
-        const snapshot = await db.collection('foodTrucks').doc(profileId).collection('availability')
-            .where(FieldValue.documentId(), '>=', startDate)
-            .where(FieldValue.documentId(), '<', endDate)
-            .get();
+        if (!year || !month) {
+            return res.status(400).json({ message: "Rok i miesiąc są wymagane." });
+        }
         
-        const unavailableDates = snapshot.docs.map(doc => doc.id);
-        res.json(unavailableDates);
+        const monthDocId = `${year}-${month}`;
+        
+        // ✨ OSTATECZNA POPRAWKA: Poprawna ścieżka do subkolekcji
+        const availabilityDoc = await db.collection('foodTrucks').doc(profileId)
+                                      .collection('unavailableDates').doc(monthDocId).get();
 
+        if (availabilityDoc.exists) {
+            res.json(availabilityDoc.data().days || []);
+        } else {
+            res.json([]); // Jeśli dokument nie istnieje, zwracamy pustą tablicę
+        }
     } catch (error) {
-        console.error('Błąd pobierania dostępności:', error);
-        res.status(500).json({ message: 'Błąd serwera.' });
+        console.error("Błąd pobierania dostępności:", error);
+        res.status(500).json({ message: "Błąd serwera." });
     }
 };
 
 exports.updateAvailability = async (req, res) => {
-    const { profileId } = req.params; // To jest doc_id
-    const { date, available } = req.body;
-    const ownerId = req.user.userId;
-
     try {
-        const profileRef = db.collection('foodTrucks').doc(profileId);
-        const profileDoc = await profileRef.get();
+        const { profileId } = req.params;
+        const { year, month, day, isUnavailable } = req.body;
+        const ownerId = req.user.userId;
 
+        const profileDoc = await db.collection('foodTrucks').doc(profileId).get();
         if (!profileDoc.exists || profileDoc.data().owner_id !== ownerId) {
             return res.status(403).json({ message: "Brak uprawnień do edycji tego kalendarza." });
         }
 
-        const availabilityDocRef = profileRef.collection('availability').doc(date);
-
-        if (available) {
-            await availabilityDocRef.delete();
-            res.status(200).json({ message: `Data ${date} została oznaczona jako dostępna.` });
+        const monthDocId = `${year}-${month}`;
+        // ✨ OSTATECZNA POPRAWKA: Poprawna ścieżka do subkolekcji
+        const availabilityRef = db.collection('foodTrucks').doc(profileId)
+                                  .collection('unavailableDates').doc(monthDocId);
+        
+        if (isUnavailable) {
+            // Dodaj dzień do tablicy niedostępnych
+            await availabilityRef.set({
+                days: FieldValue.arrayUnion(day)
+            }, { merge: true }); // Użyj merge, aby nie nadpisać istniejących dni
         } else {
-            await availabilityDocRef.set({ status: 'unavailable' });
-            res.status(200).json({ message: `Data ${date} została oznaczona jako niedostępna.` });
+            // Usuń dzień z tablicy niedostępnych
+            await availabilityRef.update({
+                days: FieldValue.arrayRemove(day)
+            });
         }
+        
+        res.status(200).json({ success: true, message: "Dostępność zaktualizowana." });
     } catch (error) {
-        console.error('Błąd aktualizacji dostępności:', error);
-        res.status(500).json({ message: 'Błąd serwera.' });
+        console.error("Błąd aktualizacji dostępności:", error);
+        res.status(500).json({ message: "Błąd serwera." });
     }
 };
+
