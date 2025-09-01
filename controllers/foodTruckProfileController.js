@@ -97,25 +97,57 @@ exports.getAllProfiles = async (req, res) => {
                 .sort((a, b) => a.distance - b.distance);
         }
 
+        // ✨ NOWA, ULEPSZONA LOGIKA FILTROWANIA PO DACIE ✨
         if (event_start_date && event_end_date) {
             const eventStart = new Date(event_start_date);
             const eventEnd = new Date(event_end_date);
             
+            // 1. Filtrujemy po rezerwacjach z Twojego systemu
             const bookingsSnap = await db.collection('bookings')
                 .where('status', '==', 'confirmed')
                 .where('event_start_date', '<=', eventEnd)
                 .get();
 
-            const unavailableProfileIds = new Set();
+            const unavailableByBooking = new Set();
             bookingsSnap.forEach(doc => {
                 const booking = doc.data();
                 const bookingStart = booking.event_start_date.toDate();
                 if (eventStart < booking.event_end_date.toDate() && eventEnd > bookingStart) {
-                    unavailableProfileIds.add(booking.profile_id);
+                    unavailableByBooking.add(booking.profile_id);
                 }
             });
 
-            profiles = profiles.filter(p => !unavailableProfileIds.has(p.profile_id));
+            // 2. Sprawdzamy niedostępność zaznaczoną w nowym kalendarzu
+            const availableProfiles = [];
+            for (const profile of profiles) {
+                let isAvailable = true;
+                
+                // Sprawdź, czy nie jest zajęty przez rezerwację w systemie
+                if (unavailableByBooking.has(profile.profile_id)) {
+                    isAvailable = false;
+                } else {
+                    // Sprawdź niedostępność w kalendarzu manualnym
+                    const availabilityRef = db.collection('foodTrucks').doc(profile.doc_id).collection('availability');
+                    const datesToCheck = [];
+                    let currentDate = new Date(eventStart);
+                    
+                    // Firestore nie pozwala na pętlę dłuższą niż na 10 zapytań 'in', więc iterujemy
+                    while (currentDate <= eventEnd) {
+                        const dateString = currentDate.toISOString().split('T')[0];
+                        const availabilityDoc = await availabilityRef.doc(dateString).get();
+                        if (availabilityDoc.exists) {
+                            isAvailable = false;
+                            break; 
+                        }
+                        currentDate.setDate(currentDate.getDate() + 1);
+                    }
+                }
+                
+                if (isAvailable) {
+                    availableProfiles.push(profile);
+                }
+            }
+            profiles = availableProfiles;
         }
         res.json(profiles);
     } catch (error) {
@@ -269,4 +301,62 @@ exports.getProfileById = async (req, res) => {
     console.error("Błąd podczas pobierania pojedynczego profilu:", error);
     res.status(500).json({ message: 'Błąd serwera.' });
   }
+};
+
+// --- ✨ NOWE FUNKCJE DO OBSŁUGI KALENDARZA ---
+
+exports.getAvailability = async (req, res) => {
+    const { profileId } = req.params; // To jest doc_id
+    const { year, month } = req.query;
+
+    if (!year || !month) {
+        return res.status(400).json({ message: "Rok i miesiąc są wymagane." });
+    }
+
+    try {
+        const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+        const nextMonth = parseInt(month, 10) === 12 ? 1 : parseInt(month, 10) + 1;
+        const nextYear = parseInt(month, 10) === 12 ? parseInt(year, 10) + 1 : parseInt(year, 10);
+        const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+
+        const snapshot = await db.collection('foodTrucks').doc(profileId).collection('availability')
+            .where(FieldValue.documentId(), '>=', startDate)
+            .where(FieldValue.documentId(), '<', endDate)
+            .get();
+        
+        const unavailableDates = snapshot.docs.map(doc => doc.id);
+        res.json(unavailableDates);
+
+    } catch (error) {
+        console.error('Błąd pobierania dostępności:', error);
+        res.status(500).json({ message: 'Błąd serwera.' });
+    }
+};
+
+exports.updateAvailability = async (req, res) => {
+    const { profileId } = req.params; // To jest doc_id
+    const { date, available } = req.body;
+    const ownerId = req.user.userId;
+
+    try {
+        const profileRef = db.collection('foodTrucks').doc(profileId);
+        const profileDoc = await profileRef.get();
+
+        if (!profileDoc.exists || profileDoc.data().owner_id !== ownerId) {
+            return res.status(403).json({ message: "Brak uprawnień do edycji tego kalendarza." });
+        }
+
+        const availabilityDocRef = profileRef.collection('availability').doc(date);
+
+        if (available) {
+            await availabilityDocRef.delete();
+            res.status(200).json({ message: `Data ${date} została oznaczona jako dostępna.` });
+        } else {
+            await availabilityDocRef.set({ status: 'unavailable' });
+            res.status(200).json({ message: `Data ${date} została oznaczona jako niedostępna.` });
+        }
+    } catch (error) {
+        console.error('Błąd aktualizacji dostępności:', error);
+        res.status(500).json({ message: 'Błąd serwera.' });
+    }
 };
